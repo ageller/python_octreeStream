@@ -48,9 +48,9 @@ class octreeStream:
 		self.center = center
 		self.baseDir = baseDir
 		
-		self.nodes = [self.createNode(self.center, '0')] #will contain a list of all nodes with each as a dict
-		self.baseNodePositions = np.array([center]) #will only contain the baseNodes locations as a list of lists (x,y,z)
-		self.baseNodeIndices = np.array([0], dtype='int') #will contain the index for each baseNode within the self.nodes array
+		self.nodes = None #will contain a list of all nodes with each as a dict
+		self.baseNodePositions = None #will only contain the baseNodes locations as a list of lists (x,y,z)
+		self.baseNodeIndices = None #will contain the index for each baseNode within the self.nodes array
 		self.path = os.path.join(os.getcwd(),self.baseDir)
 
 		self.count = 0
@@ -231,7 +231,10 @@ class octreeStream:
 	def checkNodeFiles(self):
 		#check to make sure that only the base Nodes have files
 		Nerror = 0
-		
+		if (self.baseNodeIndices is None):
+			print('Please compile the octree first')
+			return
+			
 		#first get names of all expected files
 		names = []
 		for index in self.baseNodeIndices:
@@ -287,6 +290,11 @@ class octreeStream:
 		if (not os.path.exists(self.path)):
 			os.mkdir(self.path)
 			
+		#initialize the node variables
+		self.nodes = [self.createNode(self.center, '0')] #will contain a list of all nodes with each as a dict
+		self.baseNodePositions = np.array([self.center]) #will only contain the baseNodes locations as a list of lists (x,y,z)
+		self.baseNodeIndices = np.array([0], dtype='int') #will contain the index for each baseNode within the self.nodes array
+
 		#open the input file
 		file = open(os.path.abspath(self.inputFile), 'r') #abspath converts to windows format          
 
