@@ -23,7 +23,7 @@ class npEncoder(json.JSONEncoder):
 class octreeStream:
     def __init__(self, inputFile, NMemoryMax = 1e5, NNodeMax = 5000, 
                  header = 1, delim = ',', xCol = 0, yCol = 1, zCol = 2,
-                 center = [0., 0., 0.], baseDir = 'octreeNodes'):
+                 center = [0., 0., 0.], baseDir = 'octreeNodes', lineNmax=np.inf):
         '''
             inputFile : path to the file. For now only text files.
             NMemoryMax : the maximum number of particles to save in the memory before writing to a file
@@ -34,6 +34,7 @@ class octreeStream:
             xCol, yCol, zCol : the columns that have the x,y,z data
             center : the center of the particles [x,y,z]
             baseDir : the directory to store the octree files
+            lineNmax : maximum number of lines to read in
         '''
         
         self.inputFile = inputFile
@@ -53,7 +54,8 @@ class octreeStream:
         self.path = os.path.join(os.getcwd(),self.baseDir)
 
         self.count = 0
-        
+        self.lineNmax = lineNmax
+
         self.verbose = 0
         
     def createNode(self, center, id='', xWidth=0, yWidth=0, zWidth=0):
@@ -321,7 +323,7 @@ class octreeStream:
                 if (self.count > self.NMemoryMax):
                     self.dumpNodesToFiles()
                 
-                if (lineN > 1000):
+                if (lineN > self.lineNmax):
                     self.dumpNodesToFiles()
                     break
 
