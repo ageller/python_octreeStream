@@ -23,7 +23,7 @@ class npEncoder(json.JSONEncoder):
 class octreeStream:
 	def __init__(self, inputFile, NMemoryMax = 1e5, NNodeMax = 5000, 
 				 header = 1, delim = ',', xCol = 0, yCol = 1, zCol = 2,
-				 baseDir = 'octreeNodes', lineNmax=np.inf, verbose=0):
+				 baseDir = 'octreeNodes', lineNmax=np.inf, verbose=0, path = None):
 		'''
 			inputFile : path to the file. For now only text files.
 			NMemoryMax : the maximum number of particles to save in the memory before writing to a file
@@ -44,12 +44,15 @@ class octreeStream:
 		self.xCol = xCol
 		self.yCol = yCol
 		self.zCol = zCol
-		self.baseDir = baseDir
 		
 		self.nodes = None #will contain a list of all nodes with each as a dict
 		self.baseNodePositions = None #will only contain the baseNodes locations as a list of lists (x,y,z)
 		self.baseNodeIndices = None #will contain the index for each baseNode within the self.nodes array
-		self.path = os.path.join(os.getcwd(),self.baseDir)
+		if (path is None):
+			self.path = os.path.join(os.getcwd(), baseDir)
+		else:
+			self.path = os.path.abspath(path) #to make this windows safe
+		print('files will be output to:', self.path)
 
 		self.count = 0
 		self.lineNmax = lineNmax
@@ -62,7 +65,7 @@ class octreeStream:
 		
 	def createNode(self, center, id='', width=0,):
 		return dict(x=center[0], y=center[1], z=center[2], width=width,
-					Nparticles=0, id=id, parentNodes=[], childNodes=[], particles=[])
+					Nparticles=0, id=id, parentNodes=[], childNodes=[], particles=[], needsUpdate=True)
 	
 	def findClosestNode(self, point, positions):
 		#there is probably a faster and more clever way to do this
@@ -172,7 +175,7 @@ class octreeStream:
 		
 		#individual nodes
 		for node in self.nodes:
-			if ( (node['Nparticles'] > 0) and ('particles' in node)):
+			if ( (node['Nparticles'] > 0) and ('particles' in node) and (node['needsUpdate'])):
 				parts = np.array(node['particles'])
 				x = parts[:,0]
 				y = parts[:,1]
@@ -181,6 +184,7 @@ class octreeStream:
 				nodeFile = os.path.join(self.path, node['id'] + '.csv')
 				df.to_csv(nodeFile, index=False)
 				node['particles'] = []
+				node['needsUpdate'] = False;
 				del node['particles']
 				
 		#node dict
@@ -239,11 +243,12 @@ class octreeStream:
 			
 	def populateNodeFromFile(self, node):
 		nodeFile = os.path.join(self.path, node['id'] + '.csv')
-		if (self.verbose > 0):
+		if (self.verbose > 1):
 			print('reading in file', nodeFile)
 		df = pd.read_csv(nodeFile)
 		node['particles'] = df.values.tolist()
 		node['Nparticles'] = len(node['particles'])
+		node['needsUpdate'] = True
 		self.count += node['Nparticles']
 		
 	def getSizeCenter(self):
@@ -288,6 +293,13 @@ class octreeStream:
 			print('have initial center and size', self.center, self.width)
 
 
+	def appendToFile(self, node, part):
+		nodeFile = os.path.join(self.path, node['id'] + '.csv')
+		line = str(part['x'])+','+str(part['y'])+','+str(part['z'])+'\n'
+		with open(nodeFile, 'a') as f:
+			f.write(line.replace(' ',''))
+
+
 	def compileOctree(self):
 
 		#first get the size and center
@@ -324,14 +336,17 @@ class octreeStream:
 				if (self.verbose > 1):
 					print('lineN, index, id, Nparticles',lineN, baseIndex, self.nodes[baseIndex]['id'], 
 					  self.nodes[baseIndex]['Nparticles'])
-
-				#check if there are particles in the node in memory; if not, read in the file
-				if ('particles' not in self.nodes[baseIndex]):
-					#read in the file (also add to the count)
-					self.populateNodeFromFile(self.nodes[baseIndex])
 					
 				#add the particle to the node
-				self.nodes[baseIndex]['particles'].append(point)
+				#check if there are particles in the node in memory;
+				if ('particles' in self.nodes[baseIndex]):
+					self.nodes[baseIndex]['particles'].append(point)
+				else:
+					#this node has been saved to a file, I will try to simply append the value onto the end of the file
+					self.appendToFile(self.nodes[baseIndex], dict(x=x, y=y, z=z))
+					#read in the file (also add to the count)
+					#self.populateNodeFromFile(self.nodes[baseIndex])
+
 				self.nodes[baseIndex]['Nparticles'] += 1
 
 				#check if we need to split the node
@@ -343,6 +358,9 @@ class octreeStream:
 				if (self.count > self.NMemoryMax):
 					self.dumpNodesToFiles()
 				
+				if (self.verbose > 0 and (lineN % 10000 == 0)):
+					print('line : ', lineN)
+
 				if (lineN > (self.lineNmax - self.header - 1)):
 					self.dumpNodesToFiles()
 					break
