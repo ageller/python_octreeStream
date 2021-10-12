@@ -23,7 +23,7 @@ class npEncoder(json.JSONEncoder):
 class octreeStream:
 	def __init__(self, inputFile, NMemoryMax = 1e5, NNodeMax = 5000, 
 				 header = 1, delim = ',', xCol = 0, yCol = 1, zCol = 2,
-				 center = [0., 0., 0.], baseDir = 'octreeNodes', lineNmax=np.inf):
+				 baseDir = 'octreeNodes', lineNmax=np.inf, verbose=0):
 		'''
 			inputFile : path to the file. For now only text files.
 			NMemoryMax : the maximum number of particles to save in the memory before writing to a file
@@ -32,7 +32,6 @@ class octreeStream:
 				set header=0 for no header, and in that case x,y,z are assumed to be the first three columns)
 			delim : the delimiter between columns
 			xCol, yCol, zCol : the columns that have the x,y,z data
-			center : the center of the particles [x,y,z]
 			baseDir : the directory to store the octree files
 			lineNmax : maximum number of lines to read in
 		'''
@@ -45,7 +44,6 @@ class octreeStream:
 		self.xCol = xCol
 		self.yCol = yCol
 		self.zCol = zCol
-		self.center = center
 		self.baseDir = baseDir
 		
 		self.nodes = None #will contain a list of all nodes with each as a dict
@@ -56,10 +54,14 @@ class octreeStream:
 		self.count = 0
 		self.lineNmax = lineNmax
 
-		self.verbose = 0
+		self.verbose = verbose
+
+		self.center = None #will be determined getSizeCenter
+		self.width = None #will be determined in getSizeCenter
+
 		
-	def createNode(self, center, id='', xWidth=0, yWidth=0, zWidth=0):
-		return dict(x=center[0], y=center[1], z=center[2], xWidth=xWidth, yWidth=yWidth, zWidth=zWidth,
+	def createNode(self, center, id='', width=0,):
+		return dict(x=center[0], y=center[1], z=center[2], width=width,
 					Nparticles=0, id=id, parentNodes=[], childNodes=[], particles=[])
 	
 	def findClosestNode(self, point, positions):
@@ -70,127 +72,87 @@ class octreeStream:
 	def createChildNodes(self, index):
 		#split the node into 8 separate nodes and add these to self.nodes and self.baseNodePositions
 		if (self.verbose > 0):
-			print('creating child nodes', index)
+			print('creating child nodes', index, self.nodes[index]['x'], self.nodes[index]['y'], self.nodes[index]['z'], self.nodes[index]['width'])
 
-		#update the parent widths
-		def updateWidth(node, key, arr):
-			node[key+'Width'] = max([max(arr) - node[key], node[key] - min(arr)])
-			
-		def updateParentWidth(node, parent, key):
-			if ((parent[key] + parent[key+'Width']) < (node[key] + node[key+'Width'])):
-				 parent[key+'Width'] = (node[key] + node[key+'Width']) - parent[key]
-			if ((parent[key] - parent[key+'Width']) > (node[key] - node[key+'Width'])):
-				 parent[key+'Width'] = parent[key] - (node[key] - node[key+'Width'])  
-					
+
 		if ('particles' not in self.nodes[index]):
 			self.populateNodeFromFile(self.nodes[index])
-		parts = np.array(self.nodes[index]['particles'])
-		x = parts[:,0]
-		y = parts[:,1]
-		z = parts[:,2]
-		updateWidth(self.nodes[index], 'x', x)
-		updateWidth(self.nodes[index], 'y', y)
-		updateWidth(self.nodes[index], 'z', z)
-		
-		#and propagate this upwards
-		for p in self.nodes[index]['parentNodes']:
-			updateParentWidth(self.nodes[index], self.nodes[p], 'x')
-			updateParentWidth(self.nodes[index], self.nodes[p], 'y')
-			updateParentWidth(self.nodes[index], self.nodes[p], 'z')
-				
+
 
 		#create the new nodes and add to the baseNodePositions array
-		cx = self.nodes[index]['x'] + self.nodes[index]['xWidth']/2.
-		cy = self.nodes[index]['y'] + self.nodes[index]['yWidth']/2.
-		cz = self.nodes[index]['z'] + self.nodes[index]['zWidth']/2.
-		n1 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_1', 
-							 xWidth=self.nodes[index]['xWidth']/2.,
-							 yWidth=self.nodes[index]['yWidth']/2.,
-							 zWidth=self.nodes[index]['zWidth']/2.)
+		cx = self.nodes[index]['x'] + self.nodes[index]['width']/4.
+		cy = self.nodes[index]['y'] + self.nodes[index]['width']/4.
+		cz = self.nodes[index]['z'] + self.nodes[index]['width']/4.
+		n1 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_1', width=self.nodes[index]['width']/2.)
+
+		cx = self.nodes[index]['x'] - self.nodes[index]['width']/4.
+		cy = self.nodes[index]['y'] + self.nodes[index]['width']/4.
+		cz = self.nodes[index]['z'] + self.nodes[index]['width']/4.
+		n2 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_2',  width=self.nodes[index]['width']/2.)
 		
-		cx = self.nodes[index]['x'] - self.nodes[index]['xWidth']/2.
-		cy = self.nodes[index]['y'] + self.nodes[index]['yWidth']/2.
-		cz = self.nodes[index]['z'] + self.nodes[index]['zWidth']/2.
-		n2 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_2', 
-							 xWidth=self.nodes[index]['xWidth']/2.,
-							 yWidth=self.nodes[index]['yWidth']/2.,
-							 zWidth=self.nodes[index]['zWidth']/2.)
+		cx = self.nodes[index]['x'] + self.nodes[index]['width']/4.
+		cy = self.nodes[index]['y'] - self.nodes[index]['width']/4.
+		cz = self.nodes[index]['z'] + self.nodes[index]['width']/4.
+		n3 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_3', width=self.nodes[index]['width']/2.)
 		
-		cx = self.nodes[index]['x'] + self.nodes[index]['xWidth']/2.
-		cy = self.nodes[index]['y'] - self.nodes[index]['yWidth']/2.
-		cz = self.nodes[index]['z'] + self.nodes[index]['zWidth']/2.
-		n3 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_3', 
-							 xWidth=self.nodes[index]['xWidth']/2.,
-							 yWidth=self.nodes[index]['yWidth']/2.,
-							 zWidth=self.nodes[index]['zWidth']/2.)           
+		cx = self.nodes[index]['x'] - self.nodes[index]['width']/4.
+		cy = self.nodes[index]['y'] - self.nodes[index]['width']/4.
+		cz = self.nodes[index]['z'] + self.nodes[index]['width']/4.
+		n4 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_4', width=self.nodes[index]['width']/2.)
 		
-		cx = self.nodes[index]['x'] - self.nodes[index]['xWidth']/2.
-		cy = self.nodes[index]['y'] - self.nodes[index]['yWidth']/2.
-		cz = self.nodes[index]['z'] + self.nodes[index]['zWidth']/2.
-		n4 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_4', 
-							 xWidth=self.nodes[index]['xWidth']/2.,
-							 yWidth=self.nodes[index]['yWidth']/2.,
-							 zWidth=self.nodes[index]['zWidth']/2.)   
+		cx = self.nodes[index]['x'] + self.nodes[index]['width']/4.
+		cy = self.nodes[index]['y'] + self.nodes[index]['width']/4.
+		cz = self.nodes[index]['z'] - self.nodes[index]['width']/4.
+		n5 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_5', width=self.nodes[index]['width']/2.)
+
 		
-		cx = self.nodes[index]['x'] + self.nodes[index]['xWidth']/2.
-		cy = self.nodes[index]['y'] + self.nodes[index]['yWidth']/2.
-		cz = self.nodes[index]['z'] - self.nodes[index]['zWidth']/2.
-		n5 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_5', 
-							 xWidth=self.nodes[index]['xWidth']/2.,
-							 yWidth=self.nodes[index]['yWidth']/2.,
-							 zWidth=self.nodes[index]['zWidth']/2.)
+		cx = self.nodes[index]['x'] - self.nodes[index]['width']/4.
+		cy = self.nodes[index]['y'] + self.nodes[index]['width']/4.
+		cz = self.nodes[index]['z'] - self.nodes[index]['width']/4.
+		n6 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_6', width=self.nodes[index]['width']/2.)
 		
-		cx = self.nodes[index]['x'] - self.nodes[index]['xWidth']/2.
-		cy = self.nodes[index]['y'] + self.nodes[index]['yWidth']/2.
-		cz = self.nodes[index]['z'] - self.nodes[index]['zWidth']/2.
-		n6 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_6', 
-							 xWidth=self.nodes[index]['xWidth']/2.,
-							 yWidth=self.nodes[index]['yWidth']/2.,
-							 zWidth=self.nodes[index]['zWidth']/2.) 
+		cx = self.nodes[index]['x'] + self.nodes[index]['width']/4.
+		cy = self.nodes[index]['y'] - self.nodes[index]['width']/4.
+		cz = self.nodes[index]['z'] - self.nodes[index]['width']/4.
+		n7 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_7', width=self.nodes[index]['width']/2.)
 		
-		cx = self.nodes[index]['x'] + self.nodes[index]['xWidth']/2.
-		cy = self.nodes[index]['y'] - self.nodes[index]['yWidth']/2.
-		cz = self.nodes[index]['z'] - self.nodes[index]['zWidth']/2.
-		n7 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_7', 
-							 xWidth=self.nodes[index]['xWidth']/2.,
-							 yWidth=self.nodes[index]['yWidth']/2.,
-							 zWidth=self.nodes[index]['zWidth']/2.)          
+		cx = self.nodes[index]['x'] - self.nodes[index]['width']/4.
+		cy = self.nodes[index]['y'] - self.nodes[index]['width']/4.
+		cz = self.nodes[index]['z'] - self.nodes[index]['width']/4.
+		n8 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_8', width=self.nodes[index]['width']/2.)
 		
-		cx = self.nodes[index]['x'] - self.nodes[index]['xWidth']/2.
-		cy = self.nodes[index]['y'] - self.nodes[index]['yWidth']/2.
-		cz = self.nodes[index]['z'] - self.nodes[index]['zWidth']/2.
-		n8 = self.createNode([cx, cy, cz], self.nodes[index]['id']+'_8', 
-							 xWidth=self.nodes[index]['xWidth']/2.,
-							 yWidth=self.nodes[index]['yWidth']/2.,
-							 zWidth=self.nodes[index]['zWidth']/2.)   
-		
-		#childPositions = np.array([[]])
+		#add the parent and child indices to the nodes
 		childIndices = np.array([], dtype='int')
 		for i, n in enumerate([n1, n2, n3, n4, n5, n6, n7, n8]):
 			n['parentNodes'] = self.nodes[index]['parentNodes'] + [index]
+			childIndex = len(self.nodes)
 			self.nodes.append(n)
-			self.nodes[index]['childNodes'].append(len(self.nodes) - 1)
+			self.nodes[index]['childNodes'].append(childIndex)
 			self.baseNodePositions = np.append(self.baseNodePositions, [[n['x'],n['y'],n['z']]], axis=0)
-			self.baseNodeIndices = np.append(self.baseNodeIndices, len(self.nodes) - 1)
+			self.baseNodeIndices = np.append(self.baseNodeIndices, childIndex)
+
+			#create these so that I can divide up the parent particles
 			if (i == 0):
 				childPositions = [[n['x'],n['y'],n['z']]]
 			else:
 				childPositions = np.append(childPositions, [[n['x'],n['y'],n['z']]], axis=0)
-			childIndices = np.append(childIndices, len(self.nodes) - 1)
+			childIndices = np.append(childIndices, childIndex)
 			if (self.verbose > 1):
 				print('new baseNode position',[[n['x'],n['y'],n['z']]])
 			
-		#divide up the particles (I suppose I could do this just for the children, but I already have this function...)
+		#divide up the particles 
 		for p in self.nodes[index]['particles']:
 			childIndex = childIndices[self.findClosestNode(np.array([p]), childPositions)]
 			self.nodes[childIndex]['particles'].append(p)
 			self.nodes[childIndex]['Nparticles'] += 1            
 			
-		#remove the parent center from the self.baseNodePositions
+		#remove the parent from the self.baseNode* arrays
 		i = np.where(self.baseNodeIndices == index)[0]
 		if (len(i) > 0 and i != -1):
 			self.baseNodePositions = np.delete(self.baseNodePositions, i, axis=0)
 			self.baseNodeIndices = np.delete(self.baseNodeIndices,i)
+		else:
+			print('!!!WARNING, did not find parent in baseNodes', i, index, self.baseNodeIndices)
 		
 		#remove the particles from the parent
 		self.nodes[index]['particles'] = []
@@ -284,14 +246,59 @@ class octreeStream:
 		node['Nparticles'] = len(node['particles'])
 		self.count += node['Nparticles']
 		
+	def getSizeCenter(self):
+		#It will be easiest if we can get the center and the size at the start.  This will create overhead to read in the entire file...
+
+		#open the input file
+		file = open(os.path.abspath(self.inputFile), 'r') #abspath converts to windows format          
+
+		#set up the variables
+		#center = np.array([0.,0.,0.])
+		maxPos = np.array([0., 0., 0.])
+		minPos = np.array([0., 0., 0.])
+		#begin the loop to read the file line-by-line
+		lineN = 0
+		for line in file:
+			lineN += 1
+			if (lineN >= self.header):
+				#get the x,y,z from the line 
+				split = line.strip().split(self.delim)
+				x = float(split[self.xCol])
+				y = float(split[self.yCol])
+				z = float(split[self.zCol])
+				#center += np.array([x,y,z])
+
+				maxPos[0] = max([maxPos[0],x])
+				maxPos[1] = max([maxPos[1],y])
+				maxPos[2] = max([maxPos[2],z])
+
+				minPos[0] = min([minPos[0],x])
+				minPos[1] = min([minPos[1],y])
+				minPos[2] = min([minPos[2],z])
+			if (lineN > (self.lineNmax - self.header - 1)):
+				break
+
+		file.close()
+
+		#self.center = center/(lineN - self.header)
+		self.center = (maxPos + minPos)/2.
+		self.width = np.max(maxPos - minPos)
+
+		if (self.verbose > 0):
+			print('have initial center and size', self.center, self.width)
+
+
 	def compileOctree(self):
+
+		#first get the size and center
+		self.getSizeCenter()
 
 		#create the output directory if needed
 		if (not os.path.exists(self.path)):
 			os.mkdir(self.path)
 			
 		#initialize the node variables
-		self.nodes = [self.createNode(self.center, '0')] #will contain a list of all nodes with each as a dict
+		self.nodes = [self.createNode(self.center, '0', width=self.width)] #will contain a list of all nodes with each as a dict
 		self.baseNodePositions = np.array([self.center]) #will only contain the baseNodes locations as a list of lists (x,y,z)
 		self.baseNodeIndices = np.array([0], dtype='int') #will contain the index for each baseNode within the self.nodes array
 
@@ -304,7 +311,7 @@ class octreeStream:
 		for line in file:
 			self.count += 1
 			lineN += 1
-			if (self.count >= self.header):
+			if (lineN >= self.header):
 				#get the x,y,z from the line 
 				split = line.strip().split(self.delim)
 				x = float(split[self.xCol])
@@ -336,7 +343,7 @@ class octreeStream:
 				if (self.count > self.NMemoryMax):
 					self.dumpNodesToFiles()
 				
-				if (lineN > self.lineNmax):
+				if (lineN > (self.lineNmax - self.header - 1)):
 					self.dumpNodesToFiles()
 					break
 
