@@ -215,7 +215,7 @@ class octreeStream:
 				x = parts[:,0]
 				y = parts[:,1]
 				z = parts[:,2]
-				df = pd.DataFrame(dict(x=x, y=y, z=z))
+				df = pd.DataFrame(dict(x=x, y=y, z=z)).sample(frac=1).reset_index(drop=True) #shuffle the order
 				nodeFile = os.path.join(self.path, node['id'] + '.csv')
 				df.to_csv(nodeFile, index=False)
 				node['particles'] = []
@@ -234,7 +234,7 @@ class octreeStream:
 		if (self.baseNodeIndices is None):
 			print('Please compile the octree first')
 			return
-			
+
 		#first get names of all expected files
 		names = []
 		for index in self.baseNodeIndices:
