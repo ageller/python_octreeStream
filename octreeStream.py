@@ -6,6 +6,9 @@ I want this to work with VERY large data sets that can't be stored fully in memo
 - need to write out tree with node sizes and centers and also ending nodes with actual particles
 '''
 
+#TODO
+# add ability to include other attributes than just positions
+
 import os
 import numpy as np
 import pandas as pd
@@ -23,7 +26,7 @@ class npEncoder(json.JSONEncoder):
 class octreeStream:
 	def __init__(self, inputFile, NMemoryMax = 1e5, NNodeMax = 5000, 
 				 header = 1, delim = ',', xCol = 0, yCol = 1, zCol = 2,
-				 baseDir = 'octreeNodes', lineNmax=np.inf, verbose=0, path = None, minWidth=1):
+				 baseDir = 'octreeNodes', lineNmax=np.inf, verbose=0, path = None, minWidth=0):
 		'''
 			inputFile : path to the file. For now only text files.
 			NMemoryMax : the maximum number of particles to save in the memory before writing to a file
@@ -183,7 +186,7 @@ class octreeStream:
 	def dumpNodesToFiles(self):
 		#dump all the nodes to files
 		if (self.verbose > 0):
-			print('dumping nodes to files')
+			print('dumping nodes to files ...')
 		
 		#individual nodes
 		for node in self.nodes:
@@ -272,7 +275,8 @@ class octreeStream:
 		print(' -- total number of particles = ', Nparts)
 		print(' -- total number of nodes = ', len(self.nodes))
 		print(' -- total number of base nodes = ', NbaseNodes)
-			
+		
+
 	def populateNodeFromFile(self, node):
 		nodeFile = os.path.join(self.path, node['id'] + '.csv')
 		if (self.verbose > 1):
@@ -282,6 +286,21 @@ class octreeStream:
 		node['Nparticles'] = len(node['particles'])
 		node['needsUpdate'] = True
 		self.count += node['Nparticles']
+
+	def shuffleAllParticlesInFiles(self):
+
+		if (self.verbose > 0):
+			print('randomizing particle order in data files ... ')
+
+		#read in the octree from the json file
+		with open(os.path.join(self.path,'octree.json')) as f:
+			self.nodes = json.load(f)
+				
+		for index, node in enumerate(self.nodes):
+			if (self.nodes[index]['Nparticles'] > 0):
+				nodeFile = os.path.join(self.path, node['id'] + '.csv')
+				df = pd.read_csv(nodeFile).sample(frac=1).reset_index(drop=True) #shuffle the order
+				df.to_csv(nodeFile, index=False)
 
 	def getSizeCenter(self):
 		#It will be easiest if we can get the center and the size at the start.  This will create overhead to read in the entire file...
@@ -349,7 +368,7 @@ class octreeStream:
 			lineN += 1
 			if (lineN >= self.header):
 				self.count += 1
-	
+
 				#get the x,y,z from the line 
 				split = line.strip().split(self.delim)
 				x = float(split[self.xCol])
@@ -381,9 +400,12 @@ class octreeStream:
 					print('line : ', lineN)
 
 				if (lineN > (self.lineNmax - self.header - 1)):
-					self.dumpNodesToFiles()
 					break
 
 
 		file.close()
+
+		self.dumpNodesToFiles()
+		self.shuffleAllParticlesInFiles()
+
 		print('done')
