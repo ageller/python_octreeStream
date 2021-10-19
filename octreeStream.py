@@ -8,11 +8,14 @@ I want this to work with VERY large data sets that can't be stored fully in memo
 
 #TODO
 # add ability to include other attributes than just positions
+# create hdf5 reader; function that handles a line given a position and then a file feeder and array feeder
+# will probably also want a way to add a new file or array onto the existing octree
 
 import os
 import numpy as np
 import pandas as pd
 import json
+import h5py
 
 #https://stackoverflow.com/questions/56250514/how-to-tackle-with-error-object-of-type-int32-is-not-json-serializable
 #to help with dumping to json
@@ -25,21 +28,24 @@ class npEncoder(json.JSONEncoder):
 #I'll start with a csv file, though I want to eventually allow for hdf5 files
 class octreeStream:
 	def __init__(self, inputFile, NMemoryMax = 1e5, NNodeMax = 5000, 
-				 header = 1, delim = ',', xCol = 0, yCol = 1, zCol = 2,
-				 baseDir = 'octreeNodes', lineNmax=np.inf, verbose=0, path = None, minWidth=0):
+				 header = 0, delim = None, xCol = 0, yCol = 1, zCol = 2,
+				 baseDir = 'octreeNodes', Nmax=np.inf, verbose=0, path = None, minWidth=0, 
+				 h5keyList = [], center = None):
 		'''
 			inputFile : path to the file. For now only text files.
 			NMemoryMax : the maximum number of particles to save in the memory before writing to a file
 			NNodeMax : the maximum number of particles to store in a node before splitting it
 			header : the line number of the header (file starts at line 1, 
 				set header=0 for no header, and in that case x,y,z are assumed to be the first three columns)
-			delim : the delimiter between columns
+			delim : the delimiter between columns, if set to None, then hdf5 file is assumed
 			xCol, yCol, zCol : the columns that have the x,y,z data
 			baseDir : the directory to store the octree files
-			lineNmax : maximum number of lines to read in
+			Nmax : maximum number of particles to include
 			verbose : controls how much output to write to the console
 			path : the path to the output file
 			minWidth : the minimum width that a node can have
+			h5KeyList : sequential key list needed to access coordinates, e.g., ['PartType0', 'Coordinates']
+			center : options for the user to provide the octree center (can save time)
 		'''
 		
 		self.inputFile = inputFile
@@ -51,6 +57,8 @@ class octreeStream:
 		self.yCol = yCol
 		self.zCol = zCol
 		self.minWidth = minWidth
+		self.h5keyList = h5keyList
+		self.center = center
 
 		self.nodes = None #will contain a list of all nodes with each as a dict
 		self.baseNodePositions = None #will only contain the baseNodes locations as a list of lists (x,y,z)
@@ -62,7 +70,7 @@ class octreeStream:
 		print('files will be output to:', self.path)
 
 		self.count = 0
-		self.lineNmax = lineNmax
+		self.Nmax = Nmax
 
 		self.verbose = verbose
 
@@ -302,104 +310,157 @@ class octreeStream:
 				df = pd.read_csv(nodeFile).sample(frac=1).reset_index(drop=True) #shuffle the order
 				df.to_csv(nodeFile, index=False)
 
-	def getSizeCenter(self):
+	def getSizeCenter(self, inputFile=None):
 		#It will be easiest if we can get the center and the size at the start.  This will create overhead to read in the entire file...
 
+		if (self.verbose > 0):
+			print('calculating center and size ... ')
+
+		if (inputFile is None):
+			inputFile = self.inputFile
+			
 		#open the input file
-		file = open(os.path.abspath(self.inputFile), 'r') #abspath converts to windows format          
+		if (self.delim is None):
+			#assume this is a hdf5 file
+			file = h5py.File(os.path.abspath(inputFile), 'r')
+			arr = file
+			for key in self.h5keyList:
+				arr = arr[key]
+			arr = np.array(arr)
+			self.center = np.mean(arr, axis=0)
+			maxPos = np.max(arr, axis=0)
+			minPos = np.min(arr, axis=0)
+			self.width = np.max(maxPos - minPos)
 
-		#set up the variables
-		#center = np.array([0.,0.,0.])
-		maxPos = np.array([0., 0., 0.])
-		minPos = np.array([0., 0., 0.])
-		#begin the loop to read the file line-by-line
-		lineN = 0
-		for line in file:
-			lineN += 1
-			if (lineN >= self.header):
-				#get the x,y,z from the line 
-				split = line.strip().split(self.delim)
-				x = float(split[self.xCol])
-				y = float(split[self.yCol])
-				z = float(split[self.zCol])
-				#center += np.array([x,y,z])
+		else:
+			#for text files
+			file = open(os.path.abspath(inputFile), 'r') #abspath converts to windows format          
 
-				maxPos[0] = max([maxPos[0],x])
-				maxPos[1] = max([maxPos[1],y])
-				maxPos[2] = max([maxPos[2],z])
+			#set up the variables
+			#center = np.array([0.,0.,0.])
+			maxPos = np.array([0., 0., 0.])
+			minPos = np.array([0., 0., 0.])
+			#begin the loop to read the file line-by-line
+			lineN = 0
+			center = np.array([0., 0., 0.])
+			for line in file:
+				lineN += 1
+				if (lineN >= self.header):
+					#get the x,y,z from the line 
+					point = line.strip().split(self.delim)
 
-				minPos[0] = min([minPos[0],x])
-				minPos[1] = min([minPos[1],y])
-				minPos[2] = min([minPos[2],z])
-			if (lineN > (self.lineNmax - self.header - 1)):
-				break
+					x = float(point[self.xCol])
+					y = float(point[self.yCol])
+					z = float(point[self.zCol])
+					center += np.array([x,y,z])
+
+					maxPos[0] = max([maxPos[0],x])
+					maxPos[1] = max([maxPos[1],y])
+					maxPos[2] = max([maxPos[2],z])
+
+					minPos[0] = min([minPos[0],x])
+					minPos[1] = min([minPos[1],y])
+					minPos[2] = min([minPos[2],z])
+
+				if (self.verbose > 0 and (lineN % 10000 == 0)):
+					print('line : ', lineN)
+
+				if (lineN > (self.Nmax - self.header - 1)):
+					break
+
+
+			self.center = center/(lineN - self.header)
+			#self.center = (maxPos + minPos)/2.
+			self.width = np.max(maxPos - minPos)
 
 		file.close()
-
-		#self.center = center/(lineN - self.header)
-		self.center = (maxPos + minPos)/2.
-		self.width = np.max(maxPos - minPos)
 
 		if (self.verbose > 0):
 			print('have initial center and size', self.center, self.width)
 
+	def initialize(self):
 
-	def compileOctree(self):
-
-		#first get the size and center
-		self.getSizeCenter()
+		self.count = 0
 
 		#create the output directory if needed
 		if (not os.path.exists(self.path)):
-			os.mkdir(self.path)
+			os.makedirs(self.path)
 			
 		#initialize the node variables
 		self.nodes = [self.createNode(self.center, '0', width=self.width)] #will contain a list of all nodes with each as a dict
 		self.baseNodePositions = np.array([self.center]) #will only contain the baseNodes locations as a list of lists (x,y,z)
 		self.baseNodeIndices = np.array([0], dtype='int') #will contain the index for each baseNode within the self.nodes array
 
+	def addPointToOctree(self, point):
+		#find the node that it belongs in 
+		baseIndex = self.baseNodeIndices[self.findClosestNode(np.array([point]),  self.baseNodePositions)]
+		if (self.verbose > 2):
+			print('index, id, Nparticles',baseIndex, self.nodes[baseIndex]['id'], self.nodes[baseIndex]['Nparticles'])
+			
+		#add the particle to the node
+		self.nodes[baseIndex]['particles'].append(point)
+		self.nodes[baseIndex]['needsUpdate'] = True
+		self.nodes[baseIndex]['Nparticles'] += 1
+
+		#check if we need to split the node
+		if (self.nodes[baseIndex]['Nparticles'] >= self.NNodeMax and self.nodes[baseIndex]['width'] >= self.minWidth*2):
+			self.createChildNodes(baseIndex) 
+
+		#if we are beyond the memory limit, then write the nodes to files and clear the particles from the nodes 
+		#(also reset the count)
+		if (self.count > self.NMemoryMax):
+			self.dumpNodesToFiles()
+
+
+	def compileOctree(self, inputFile=None, append=False):
+
+
+
+		#initialize a few things
+		if (not append):
+			self.getSizeCenter()
+			self.initialize()
+
+		if (inputFile is None):
+			inputFile = self.inputFile
+
 		#open the input file
-		file = open(os.path.abspath(self.inputFile), 'r') #abspath converts to windows format          
+		if (self.delim is None):
+			#assume this is a hdf5 file
+			file = h5py.File(os.path.abspath(inputFile), 'r')
+			arr = file
+			for key in self.h5keyList:
+				arr = arr[key]
+		else:
+			#for text files
+			file = open(os.path.abspath(inputFile), 'r') #abspath converts to windows format          
+			arr = file
 
 		#begin the loop to read the file line-by-line
-		self.count = 0
 		lineN = 0
-		for line in file:
+		for line in arr:
 			lineN += 1
 			if (lineN >= self.header):
 				self.count += 1
 
 				#get the x,y,z from the line 
-				split = line.strip().split(self.delim)
-				x = float(split[self.xCol])
-				y = float(split[self.yCol])
-				z = float(split[self.zCol])
+				#get the x,y,z from the line 
+				if (self.delim is None):
+					point = line
+				else:
+					point = line.strip().split(self.delim)
+
+				x = float(point[self.xCol])
+				y = float(point[self.yCol])
+				z = float(point[self.zCol])
 				point = [x,y,z]
 				
-				#find the node that it belongs in 
-				baseIndex = self.baseNodeIndices[self.findClosestNode(np.array([point]),  self.baseNodePositions)]
-				if (self.verbose > 2):
-					print('lineN, index, id, Nparticles',lineN, baseIndex, self.nodes[baseIndex]['id'], 
-					  self.nodes[baseIndex]['Nparticles'])
-					
-				#add the particle to the node
-				self.nodes[baseIndex]['particles'].append(point)
-				self.nodes[baseIndex]['needsUpdate'] = True
-				self.nodes[baseIndex]['Nparticles'] += 1
-
-				#check if we need to split the node
-				if (self.nodes[baseIndex]['Nparticles'] >= self.NNodeMax and self.nodes[baseIndex]['width'] >= self.minWidth*2):
-					self.createChildNodes(baseIndex) 
-
-				#if we are beyond the memory limit, then write the nodes to files and clear the particles from the nodes 
-				#(also reset the count)
-				if (self.count > self.NMemoryMax):
-					self.dumpNodesToFiles()
+				self.addPointToOctree(point)
 				
 				if (self.verbose > 0 and (lineN % 10000 == 0)):
 					print('line : ', lineN)
 
-				if (lineN > (self.lineNmax - self.header - 1)):
+				if (lineN > (self.Nmax - self.header - 1)):
 					break
 
 
