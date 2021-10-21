@@ -61,8 +61,7 @@ class octreeStream:
 		self.center = center
 
 		self.nodes = None #will contain a list of all nodes with each as a dict
-		self.baseNodePositions = None #will only contain the baseNodes locations as a list of lists (x,y,z)
-		self.baseNodeIndices = None #will contain the index for each baseNode within the self.nodes array
+
 		if (path is None):
 			self.path = os.path.join(os.getcwd(), baseDir)
 		else:
@@ -82,103 +81,107 @@ class octreeStream:
 		return dict(x=center[0], y=center[1], z=center[2], width=width,
 					Nparticles=0, id=id, parentNodes=[], childNodes=[], particles=[], needsUpdate=True)
 	
-	def findClosestNode(self, point, positions):
+	def findClosestNodeIndexByDistance(self, point, positions):
 		#there is probably a faster and more clever way to do this
 		dist2 = np.sum((positions - point)**2, axis=1)
 		return np.argmin(dist2)
 	
-	def createChildNodes(self, index):
+	def findClosestNode(self, point):
+		#I am going to traverse the octree to find the closest node
+		index = 0
+		parent = self.nodes[index]
+		childIndices = parent['childNodes']
 
-		node = self.nodes[index]
+		while (childIndices != []):
+			childPositions = []
+			for i in childIndices:
+				childPositions.append([self.nodes[i]['x'], self.nodes[i]['y'], self.nodes[i]['z']])
+			index = childIndices[self.findClosestNodeIndexByDistance(point, childPositions)]
+			parent = self.nodes[index]
+			childIndices = parent['childNodes']
 
-		#split the node into 8 separate nodes and add these to self.nodes and self.baseNodePositions
+		return parent
+
+
+	def createChildNodes(self, node):
+
+		#split the node into 8 separate nodes
 		if (self.verbose > 0):
-			print('creating child nodes', index, node['id'], node['Nparticles'], node['width'])
-
+			print('creating child nodes', node['id'], node['Nparticles'], node['width'])
 
 		#check if we need to read in the file (should this be a more careful check?)
 		if (len(node['particles']) < self.NNodeMax): 
 			self.populateNodeFromFile(node)
 
 
-		#create the new nodes and add to the baseNodePositions array
+		#create the new nodes 
 		cx = node['x'] + node['width']/4.
 		cy = node['y'] + node['width']/4.
 		cz = node['z'] + node['width']/4.
-		n1 = self.createNode([cx, cy, cz], node['id']+'_1', width=node['width']/2.)
+		n1 = self.createNode([cx, cy, cz], node['id']+'1', width=node['width']/2.)
 
 		cx = node['x'] - node['width']/4.
 		cy = node['y'] + node['width']/4.
 		cz = node['z'] + node['width']/4.
-		n2 = self.createNode([cx, cy, cz], node['id']+'_2',  width=node['width']/2.)
+		n2 = self.createNode([cx, cy, cz], node['id']+'2',  width=node['width']/2.)
 		
 		cx = node['x'] + node['width']/4.
 		cy = node['y'] - node['width']/4.
 		cz = node['z'] + node['width']/4.
-		n3 = self.createNode([cx, cy, cz], node['id']+'_3', width=node['width']/2.)
+		n3 = self.createNode([cx, cy, cz], node['id']+'3', width=node['width']/2.)
 		
 		cx = node['x'] - node['width']/4.
 		cy = node['y'] - node['width']/4.
 		cz = node['z'] + node['width']/4.
-		n4 = self.createNode([cx, cy, cz], node['id']+'_4', width=node['width']/2.)
+		n4 = self.createNode([cx, cy, cz], node['id']+'4', width=node['width']/2.)
 		
 		cx = node['x'] + node['width']/4.
 		cy = node['y'] + node['width']/4.
 		cz = node['z'] - node['width']/4.
-		n5 = self.createNode([cx, cy, cz], node['id']+'_5', width=node['width']/2.)
+		n5 = self.createNode([cx, cy, cz], node['id']+'5', width=node['width']/2.)
 
 		
 		cx = node['x'] - node['width']/4.
 		cy = node['y'] + node['width']/4.
 		cz = node['z'] - node['width']/4.
-		n6 = self.createNode([cx, cy, cz], node['id']+'_6', width=node['width']/2.)
+		n6 = self.createNode([cx, cy, cz], node['id']+'6', width=node['width']/2.)
 		
 		cx = node['x'] + node['width']/4.
 		cy = node['y'] - node['width']/4.
 		cz = node['z'] - node['width']/4.
-		n7 = self.createNode([cx, cy, cz], node['id']+'_7', width=node['width']/2.)
+		n7 = self.createNode([cx, cy, cz], node['id']+'7', width=node['width']/2.)
 		
 		cx = node['x'] - node['width']/4.
 		cy = node['y'] - node['width']/4.
 		cz = node['z'] - node['width']/4.
-		n8 = self.createNode([cx, cy, cz], node['id']+'_8', width=node['width']/2.)
+		n8 = self.createNode([cx, cy, cz], node['id']+'8', width=node['width']/2.)
 		
 		childIndices = np.array([], dtype='int')
 		for i, n in enumerate([n1, n2, n3, n4, n5, n6, n7, n8]):
 			#add the parent and child indices to the nodes
-			n['parentNodes'] = node['parentNodes'] + [index]
+			n['parentNodes'] = node['parentNodes'] + [self.nodes.index(node)]
 			childIndex = len(self.nodes)
 			self.nodes.append(n)
 			node['childNodes'].append(childIndex)
 
 			#create these so that I can divide up the parent particles
 			if (i == 0):
-				childPositions = [[n['x'],n['y'],n['z']]]
+				childPositions = np.array([[n['x'],n['y'],n['z']]])
 			else:
 				childPositions = np.append(childPositions, [[n['x'],n['y'],n['z']]], axis=0)
 			childIndices = np.append(childIndices, childIndex)
 
 		#divide up the particles 
 		for p in node['particles']:
-			childIndex = childIndices[self.findClosestNode(np.array([p]), childPositions)]
-			self.nodes[childIndex]['particles'].append(p)
-			self.nodes[childIndex]['Nparticles'] += 1      
+			child = self.findClosestNode(np.array([p]))
+			child['particles'].append(p)
+			child['Nparticles'] += 1      
 
-			#add to the baseNodes
-			if (childIndex not in self.baseNodeIndices):
-				n = self.nodes[childIndex]
-				self.baseNodePositions = np.append(self.baseNodePositions, [[n['x'],n['y'],n['z']]], axis=0)
-				self.baseNodeIndices = np.append(self.baseNodeIndices, childIndex)
-				if (self.verbose > 1):
-					print('new baseNode position', n['id'], [[n['x'],n['y'],n['z']]])
-
-		#remove the parent from the self.baseNodes arrays
-		i = np.where(self.baseNodeIndices == index)[0]
-		if (len(i) > 0 and i != -1):
-			self.baseNodePositions = np.delete(self.baseNodePositions, i, axis=0)
-			self.baseNodeIndices = np.delete(self.baseNodeIndices,i)
-		else:
-			print('!!!WARNING, did not find parent in baseNodes', i, index, self.baseNodeIndices)
+		#check how many particles ended up in each child node
+		# if (self.verbose > 0):
+		# 	for i, n in enumerate([n1, n2, n3, n4, n5, n6, n7, n8]):
+		# 		print('   Child node, Nparticles', n['id'], n['Nparticles'])
+		# 		self.checkNodeParticles(node=n)
 		
 		#remove the particles from the parent
 		node['particles'] = []
@@ -224,20 +227,74 @@ class octreeStream:
 
 		self.count = 0
 				
-		
+	
+	def checkNodeParticles(self, node=None, iden=None):
+		if (iden is not None):
+			for n in self.nodes:
+				if (n['id'] == iden):
+					node = n
+					break
+
+		if (node is not None):
+			center = [node['x'], node['y'], node['z']]
+			print('      checking node...')
+			print('      width = ', node['width'])
+			print('      Nparticles = ', node['Nparticles'])
+			print('      center = ',center)
+			if (node['Nparticles'] > 0):
+				if (node['particles'] == [] and node['Nparticles'] > 0):
+					self.populateNodeFromFile(node)
+
+				#get the mean position of the particles and the max width
+				parts = np.array(node['particles'])
+
+				meanPosition = np.mean(parts, axis=0)
+				maxPosition = np.max(parts, axis=0)
+				minPosition = np.min(parts, axis=0)
+				dist2 = np.sum((parts - np.array([center]))**2, axis=1)
+				width = np.max(np.sqrt(dist2))
+				hi = maxPosition - np.array(center)
+				lo = np.array(center) - minPosition
+				width_linear = np.max(hi - lo)
+
+				print('      mean particle position = ', meanPosition)
+				print('      max particle position = ', maxPosition)
+				print('      min particle position = ', minPosition)
+				print('      max distance for particle positions = ', maxPosition - minPosition)
+				print('      width of particles', width, width_linear)
+
+				if (width > node['width']):
+					print('      !!!! WARNING, particles are outside width of node')
+					wAll = np.sqrt(dist2)
+					outside = np.where(wAll > node['width'])[0]
+					outside_pick = outside[0]
+					#check if there is a closer node... and if not, why not!!??
+					for i,n in enumerate(self.nodes):
+						if (i == 0):
+							allPositions = np.array([[n['x'], n['y'], n['z']]])
+						else:
+							allPositions = np.append(allPositions, [[n['x'], n['y'], n['z']]], axis=0)
+					p = np.array([parts[outside_pick]])
+					dist2 = np.sum((allPositions - p)**2., axis=1)
+					print('      checking this particle',p)
+					print('      min distance to all, base nodes',min(dist2)**0.5, min(dist2base)**0.5)
+		else:
+			print('Please specify a node or node id on input')
+
 	def checkNodeFiles(self):
-		#check to make sure that only the base Nodes have files
+		#check to make sure that only the nodes with Nparticles > 0 have files
 		Nerror = 0
-		if (self.baseNodeIndices is None):
+		if (self.nodes is None):
 			print('Please compile the octree first')
 			return
 
 		#first get names of all expected files
 		names = []
 		Nparts = []
-		for index in self.baseNodeIndices:
-			names.append(self.nodes[index]['id'] + '.csv')
-			Nparts.append(self.nodes[index]['Nparticles'])
+		for n in self.nodes:
+			if (n['Nparticles'] > 0):
+				names.append(n['id'] + '.csv')
+				Nparts.append(n['Nparticles'])
 
 		avail = os.listdir(self.path)
 
@@ -259,26 +316,19 @@ class octreeStream:
 			
 	def populateAllNodesFromFiles(self, read = True):
 		Nparts = 0
-		NbaseNodes = 0
 
 		#read in the octree from the json file
 		if (read):
 			with open(os.path.join(self.path,'octree.json')) as f:
 				self.nodes = json.load(f)
 				
-		#also recreate the base nodes
-		self.baseNodeIndices = np.array([],dtype='int')
-		self.baseNodePositions = None
-		for index, node in enumerate(self.nodes):
-			if (self.nodes[index]['Nparticles'] > 0):
-				Nparts += self.nodes[index]['Nparticles']
+
+		NbaseNodes = 0
+		for node in self.nodes:
+			if (node['Nparticles'] > 0):
+				Nparts += node['Nparticles']
 				NbaseNodes += 1
-				self.baseNodeIndices = np.append(self.baseNodeIndices, index)
-				if (self.baseNodePositions is None):
-					self.baseNodePositions = np.array([[node['x'], node['y'], node['z']]])
-				else:
-					self.baseNodePositions = np.append(self.baseNodePositions, [[node['x'], node['y'], node['z']]], axis=0)
-				self.populateNodeFromFile(self.nodes[index])
+				self.populateNodeFromFile(node)
 		print('Populated octree from files.')
 		print(' -- total number of particles = ', Nparts)
 		print(' -- total number of nodes = ', len(self.nodes))
@@ -304,9 +354,11 @@ class octreeStream:
 		with open(os.path.join(self.path,'octree.json')) as f:
 			self.nodes = json.load(f)
 				
-		for index, node in enumerate(self.nodes):
-			if (self.nodes[index]['Nparticles'] > 0):
+		for node in self.nodes:
+			if (node['Nparticles'] > 0):
 				nodeFile = os.path.join(self.path, node['id'] + '.csv')
+				if (self.verbose > 1):
+					print(nodeFile)
 				df = pd.read_csv(nodeFile).sample(frac=1).reset_index(drop=True) #shuffle the order
 				df.to_csv(nodeFile, index=False)
 
@@ -388,23 +440,21 @@ class octreeStream:
 			
 		#initialize the node variables
 		self.nodes = [self.createNode(self.center, '0', width=self.width)] #will contain a list of all nodes with each as a dict
-		self.baseNodePositions = np.array([self.center]) #will only contain the baseNodes locations as a list of lists (x,y,z)
-		self.baseNodeIndices = np.array([0], dtype='int') #will contain the index for each baseNode within the self.nodes array
 
 	def addPointToOctree(self, point):
 		#find the node that it belongs in 
-		baseIndex = self.baseNodeIndices[self.findClosestNode(np.array([point]),  self.baseNodePositions)]
+		node = self.findClosestNode(np.array([point]))
 		if (self.verbose > 2):
-			print('index, id, Nparticles',baseIndex, self.nodes[baseIndex]['id'], self.nodes[baseIndex]['Nparticles'])
+			print('id, Nparticles', node['id'], node['Nparticles'])
 			
 		#add the particle to the node
-		self.nodes[baseIndex]['particles'].append(point)
-		self.nodes[baseIndex]['needsUpdate'] = True
-		self.nodes[baseIndex]['Nparticles'] += 1
+		node['particles'].append(point)
+		node['needsUpdate'] = True
+		node['Nparticles'] += 1
 
 		#check if we need to split the node
-		if (self.nodes[baseIndex]['Nparticles'] >= self.NNodeMax and self.nodes[baseIndex]['width'] >= self.minWidth*2):
-			self.createChildNodes(baseIndex) 
+		if (node['Nparticles'] >= self.NNodeMax and node['width'] >= self.minWidth*2):
+			self.createChildNodes(node) 
 
 		#if we are beyond the memory limit, then write the nodes to files and clear the particles from the nodes 
 		#(also reset the count)
@@ -413,8 +463,6 @@ class octreeStream:
 
 
 	def compileOctree(self, inputFile=None, append=False):
-
-
 
 		#initialize a few things
 		if (not append):
@@ -443,7 +491,6 @@ class octreeStream:
 			if (lineN >= self.header):
 				self.count += 1
 
-				#get the x,y,z from the line 
 				#get the x,y,z from the line 
 				if (self.delim is None):
 					point = line
