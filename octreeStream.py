@@ -86,10 +86,11 @@ class octreeStream:
 		dist2 = np.sum((positions - point)**2, axis=1)
 		return np.argmin(dist2)
 	
-	def findClosestNode(self, point):
+	def findClosestNode(self, point, parentIndex=None):
 		#I am going to traverse the octree to find the closest node
-		index = 0
-		parent = self.nodes[index]
+		if (parentIndex is None):
+			parentIndex = 0
+		parent = self.nodes[parentIndex]
 		childIndices = parent['childNodes']
 
 		while (childIndices != []):
@@ -173,7 +174,7 @@ class octreeStream:
 
 		#divide up the particles 
 		for p in node['particles']:
-			child = self.findClosestNode(np.array([p]))
+			child = self.findClosestNode(np.array([p]), parentIndex=self.nodes.index(node))
 			child['particles'].append(p)
 			child['Nparticles'] += 1      
 
