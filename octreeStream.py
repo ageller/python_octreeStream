@@ -73,7 +73,6 @@ class octreeStream:
 
 		self.verbose = verbose
 
-		self.center = None #will be determined getSizeCenter
 		self.width = None #will be determined in getSizeCenter
 
 		
@@ -380,10 +379,11 @@ class octreeStream:
 			for key in self.h5keyList:
 				arr = arr[key]
 			arr = np.array(arr)
-			self.center = np.mean(arr, axis=0)
-			maxPos = np.max(arr, axis=0)
-			minPos = np.min(arr, axis=0)
-			self.width = np.max(maxPos - minPos)
+			if (self.center is None):
+				self.center = np.mean(arr, axis=0)
+			maxPos = np.max(arr - self.center, axis=0)
+			minPos = np.min(arr - self.center, axis=0)
+			self.width = 2.*np.max(np.abs(np.append(maxPos,minPos)))
 
 		else:
 			#for text files
@@ -415,16 +415,19 @@ class octreeStream:
 					minPos[1] = min([minPos[1],y])
 					minPos[2] = min([minPos[2],z])
 
-				if (self.verbose > 0 and (lineN % 10000 == 0)):
+				if (self.verbose > 0 and (lineN % 100000 == 0)):
 					print('line : ', lineN)
 
 				if (lineN > (self.Nmax - self.header - 1)):
 					break
 
 
-			self.center = center/(lineN - self.header)
+			if (self.center is None):
+				self.center = center/(lineN - self.header)
 			#self.center = (maxPos + minPos)/2.
-			self.width = np.max(maxPos - minPos)
+			maxPos -= self.center
+			minPos -= self.center
+			self.width = 2.*np.max(np.abs(np.append(maxPos, minPos)))
 
 		file.close()
 
@@ -505,7 +508,7 @@ class octreeStream:
 				
 				self.addPointToOctree(point)
 				
-				if (self.verbose > 0 and (lineN % 10000 == 0)):
+				if (self.verbose > 0 and (lineN % 100000 == 0)):
 					print('line : ', lineN)
 
 				if (lineN > (self.Nmax - self.header - 1)):
