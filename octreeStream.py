@@ -28,9 +28,9 @@ class npEncoder(json.JSONEncoder):
 #I'll start with a csv file, though I want to eventually allow for hdf5 files
 class octreeStream:
 	def __init__(self, inputFile, NMemoryMax = 1e5, NNodeMax = 5000, 
-				 header = 0, delim = None, xCol = 0, yCol = 1, zCol = 2,
+				 header = 0, delim = None, colIndices = {'Coordinates':[0,1,2]},
 				 baseDir = 'octreeNodes', Nmax=np.inf, verbose=0, path = None, minWidth=0, 
-				 h5keyList = [], center = None):
+				 h5PartKey = '', keyList = ['Coordinates'], center = None):
 		'''
 			inputFile : path to the file. For now only text files.
 			NMemoryMax : the maximum number of particles to save in the memory before writing to a file
@@ -38,13 +38,14 @@ class octreeStream:
 			header : the line number of the header (file starts at line 1, 
 				set header=0 for no header, and in that case x,y,z are assumed to be the first three columns)
 			delim : the delimiter between columns, if set to None, then hdf5 file is assumed
-			xCol, yCol, zCol : the columns that have the x,y,z data
+			colIndices : dict with the column numbers for each value in keyList (only necessary for csv files)
 			baseDir : the directory to store the octree files
 			Nmax : maximum number of particles to include
 			verbose : controls how much output to write to the console
 			path : the path to the output file
 			minWidth : the minimum width that a node can have
-			h5KeyList : sequential key list needed to access coordinates, e.g., ['PartType0', 'Coordinates']
+			h5PartKey : if needed, can be used to specify which particle type to use, e.g. 'PartType0'
+			keyList : Any additional keys that are desired; MUST contain the key to Coordinates first.  If blank, then assume that x,y,z is the first 3 columns in file
 			center : options for the user to provide the octree center (can save time)
 		'''
 		
@@ -53,11 +54,10 @@ class octreeStream:
 		self.NNodeMax = NNodeMax
 		self.header = header
 		self.delim = delim
-		self.xCol = xCol
-		self.yCol = yCol
-		self.zCol = zCol
+		self.colIndices = colIndices
 		self.minWidth = minWidth
-		self.h5keyList = h5keyList
+		self.h5PartKey = h5PartKey
+		self.keyList = keyList
 		self.center = center
 
 		self.nodes = None #will contain a list of all nodes with each as a dict
@@ -82,6 +82,7 @@ class octreeStream:
 	
 	def findClosestNodeIndexByDistance(self, point, positions):
 		#there is probably a faster and more clever way to do this
+		#print('checking dist', point.shape, positions.shape, point, positions)
 		dist2 = np.sum((positions - point)**2, axis=1)
 		return np.argmin(dist2)
 	
@@ -96,7 +97,7 @@ class octreeStream:
 			childPositions = []
 			for i in childIndices:
 				childPositions.append([self.nodes[i]['x'], self.nodes[i]['y'], self.nodes[i]['z']])
-			index = childIndices[self.findClosestNodeIndexByDistance(point, childPositions)]
+			index = childIndices[self.findClosestNodeIndexByDistance(point[0:3], np.array(childPositions))]
 			parent = self.nodes[index]
 			childIndices = parent['childNodes']
 
@@ -173,7 +174,7 @@ class octreeStream:
 
 		#divide up the particles 
 		for p in node['particles']:
-			child = self.findClosestNode(np.array([p]), parentIndex=self.nodes.index(node))
+			child = self.findClosestNode(np.array(p), parentIndex=self.nodes.index(node))
 			child['particles'].append(p)
 			child['Nparticles'] += 1      
 
@@ -204,10 +205,24 @@ class octreeStream:
 			if ( (node['Nparticles'] > 0) and ('particles' in node) and (node['needsUpdate'])):
 
 				parts = np.array(node['particles'])
-				x = parts[:,0]
-				y = parts[:,1]
-				z = parts[:,2]
-				df = pd.DataFrame(dict(x=x, y=y, z=z)).sample(frac=1).reset_index(drop=True) #shuffle the order
+				outDict = dict()
+				j = 3
+				for i,key in enumerate(self.keyList):
+					if (i == 0): #Coordinates are always first
+						outDict['x'] = parts[:,0]
+						outDict['y'] = parts[:,1]
+						outDict['z'] = parts[:,2]
+					else:
+						if (key == 'Velocities'):
+							outDict['vx'] = parts[:,j]
+							outDict['vy'] = parts[:,j+1]
+							outDict['vz'] = parts[:,j+2]
+							j += 3
+						else:
+							outDict[key] = parts[:,j]
+							j += 1
+
+				df = pd.DataFrame(outDict).sample(frac=1).reset_index(drop=True) #shuffle the order
 				nodeFile = os.path.join(self.path, node['id'] + '.csv')
 				#check if the file exists
 				mode = 'w'
@@ -246,7 +261,7 @@ class octreeStream:
 					self.populateNodeFromFile(node)
 
 				#get the mean position of the particles and the max width
-				parts = np.array(node['particles'])
+				parts = np.array(node['particles'])[:,0:3]
 
 				meanPosition = np.mean(parts, axis=0)
 				maxPosition = np.max(parts, axis=0)
@@ -274,7 +289,7 @@ class octreeStream:
 							allPositions = np.array([[n['x'], n['y'], n['z']]])
 						else:
 							allPositions = np.append(allPositions, [[n['x'], n['y'], n['z']]], axis=0)
-					p = np.array([parts[outside_pick]])
+					p = np.array([parts[outside_pick]])[:,0:3]
 					dist2 = np.sum((allPositions - p)**2., axis=1)
 					print('      checking this particle',p)
 					print('      min distance to all, base nodes',min(dist2)**0.5, min(dist2base)**0.5)
@@ -376,9 +391,9 @@ class octreeStream:
 			#assume this is a hdf5 file
 			file = h5py.File(os.path.abspath(inputFile), 'r')
 			arr = file
-			for key in self.h5keyList:
-				arr = arr[key]
-			arr = np.array(arr)
+			if (self.h5PartKey != ''):
+				arr = arr[self.h5PartKey]
+			arr = np.array(arr[self.keyList[0]]) #Coordinates are always first
 			if (self.center is None):
 				self.center = np.mean(arr, axis=0)
 			maxPos = np.max(arr - self.center, axis=0)
@@ -402,9 +417,10 @@ class octreeStream:
 					#get the x,y,z from the line 
 					point = line.strip().split(self.delim)
 
-					x = float(point[self.xCol])
-					y = float(point[self.yCol])
-					z = float(point[self.zCol])
+					coordIndices = self.colIndices['Coordinates']
+					x = float(point[coordIndices[0]])
+					y = float(point[coordIndices[1]])
+					z = float(point[coordIndices[2]])
 					center += np.array([x,y,z])
 
 					maxPos[0] = max([maxPos[0],x])
@@ -447,7 +463,7 @@ class octreeStream:
 
 	def addPointToOctree(self, point):
 		#find the node that it belongs in 
-		node = self.findClosestNode(np.array([point]))
+		node = self.findClosestNode(np.array(point))
 		if (self.verbose > 2):
 			print('id, Nparticles', node['id'], node['Nparticles'])
 			
@@ -481,8 +497,20 @@ class octreeStream:
 			#assume this is a hdf5 file
 			file = h5py.File(os.path.abspath(inputFile), 'r')
 			arr = file
-			for key in self.h5keyList:
-				arr = arr[key]
+			if (self.h5PartKey != ''):
+				arrPart = arr[self.h5PartKey]
+
+			#now build the particle array
+			for i, key in enumerate(self.keyList):
+				if (i == 0):
+					arr = np.array(arrPart[key]) #Coordinates are always first
+				else:
+					addOn = np.array(arrPart[key])
+					arrLen = 1
+					if (key == 'Velocities'): #requires special handling because it is a 2D array
+						arrLen = 3
+					arr = np.hstack((arr, np.reshape(addOn, (len(arr),arrLen))))
+
 		else:
 			#for text files
 			file = open(os.path.abspath(inputFile), 'r') #abspath converts to windows format          
@@ -499,13 +527,15 @@ class octreeStream:
 				if (self.delim is None):
 					point = line
 				else:
-					point = line.strip().split(self.delim)
+					lineStrip = line.strip().split(self.delim)
+					point = []
+					for key in self.keyList:
+						indices =  self.colIndices[key]
+						if (type(indices) is not list):
+							indices = [indices]
+						for i in indices:
+							point.append(float(lineStrip[i]))
 
-				x = float(point[self.xCol])
-				y = float(point[self.yCol])
-				z = float(point[self.zCol])
-				point = [x,y,z]
-				
 				self.addPointToOctree(point)
 				
 				if (self.verbose > 0 and (lineN % 100000 == 0)):
