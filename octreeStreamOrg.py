@@ -8,9 +8,9 @@ I want this to work with VERY large data sets that can't be stored fully in memo
 
 import os
 import numpy as np
+import pandas as pd
 import json
 import h5py
-import random
 
 #https://stackoverflow.com/questions/56250514/how-to-tackle-with-error-object-of-type-int32-is-not-json-serializable
 #to help with dumping to json
@@ -99,6 +99,7 @@ class octreeStream:
 			childIndices = parent['childNodes']
 
 		return parent
+
 
 	def createChildNodes(self, node):
 
@@ -201,29 +202,32 @@ class octreeStream:
 			if ( (node['Nparticles'] > 0) and ('particles' in node) and (node['needsUpdate'])):
 
 				parts = np.array(node['particles'])
-				nodeFile = os.path.join(self.path, node['id'] + '.csv')
-				fmt = ''
-				header = ''
-				for key in self.keyList:
-					if (key == 'Coordinates'):
-						fmt += '%.8e,%.8e,%.8e,'
-						header +='x,y,z,'
-					elif(key == 'Velocities'):
-						fmt += '%.8e,%.8e,%.8e,'
-						header +='vx,vy,vz,'
+				outDict = dict()
+				j = 3
+				for i,key in enumerate(self.keyList):
+					if (i == 0): #Coordinates are always first
+						outDict['x'] = parts[:,0]
+						outDict['y'] = parts[:,1]
+						outDict['z'] = parts[:,2]
 					else:
-						fmt += '%.8e,'
-						header += key + ','
-				fmt = fmt[:-1] #remove the last ','
-				header = header[:-1] #remove the last ','
+						if (key == 'Velocities'):
+							outDict['vx'] = parts[:,j]
+							outDict['vy'] = parts[:,j+1]
+							outDict['vz'] = parts[:,j+2]
+							j += 3
+						else:
+							outDict[key] = parts[:,j]
+							j += 1
+
+				df = pd.DataFrame(outDict).sample(frac=1).reset_index(drop=True) #shuffle the order
+				nodeFile = os.path.join(self.path, node['id'] + '.csv')
+				#check if the file exists
 				mode = 'w'
+				header = True
 				if (os.path.exists(nodeFile)):
 					mode = 'a'
-					header = ''
-				with open(nodeFile, mode) as f:
-					np.savetxt(nodeFile, parts, fmt=fmt, header=header, comments='')
-
-
+					header = False
+				df.to_csv(nodeFile, index=False, header=header, mode=mode)
 				node['particles'] = []
 				node['needsUpdate'] = False
 				if (self.verbose > 1):
@@ -347,8 +351,8 @@ class octreeStream:
 		nodeFile = os.path.join(self.path, node['id'] + '.csv')
 		if (self.verbose > 1):
 			print('reading in file', nodeFile)
-		parts = np.genfromtxt(nodeFile, delimiter=',', skip_header=1).tolist()
-		node['particles'] += parts
+		df = pd.read_csv(nodeFile)
+		node['particles'] += df.values.tolist()
 		node['Nparticles'] = len(node['particles'])
 		node['needsUpdate'] = True
 		self.count += node['Nparticles']
@@ -367,12 +371,8 @@ class octreeStream:
 				nodeFile = os.path.join(self.path, node['id'] + '.csv')
 				if (self.verbose > 1):
 					print(nodeFile)
-				lines = open(nodeFile).readlines()
-				header = lines[0]
-				parts = lines[1:]
-				random.shuffle(parts)
-				lines = [header] + parts
-				open(nodeFile, 'w').writelines(lines)
+				df = pd.read_csv(nodeFile).sample(frac=1).reset_index(drop=True) #shuffle the order
+				df.to_csv(nodeFile, index=False)
 
 	def getSizeCenter(self, inputFile=None):
 		#It will be easiest if we can get the center and the size at the start.  This will create overhead to read in the entire file...
@@ -400,55 +400,52 @@ class octreeStream:
 		else:
 			#for text files
 			file = open(os.path.abspath(inputFile), 'r') #abspath converts to windows format          
-			self.iterFileCenter(file)
+
+			#set up the variables
+			#center = np.array([0.,0.,0.])
+			maxPos = np.array([0., 0., 0.])
+			minPos = np.array([0., 0., 0.])
+			#begin the loop to read the file line-by-line
+			lineN = 0
+			center = np.array([0., 0., 0.])
+			for line in file:
+				lineN += 1
+				if (lineN >= self.header):
+					#get the x,y,z from the line 
+					point = line.strip().split(self.delim)
+
+					coordIndices = self.colIndices['Coordinates']
+					x = float(point[coordIndices[0]])
+					y = float(point[coordIndices[1]])
+					z = float(point[coordIndices[2]])
+					center += np.array([x,y,z])
+
+					maxPos[0] = max([maxPos[0],x])
+					maxPos[1] = max([maxPos[1],y])
+					maxPos[2] = max([maxPos[2],z])
+
+					minPos[0] = min([minPos[0],x])
+					minPos[1] = min([minPos[1],y])
+					minPos[2] = min([minPos[2],z])
+
+				if (self.verbose > 0 and (lineN % 100000 == 0)):
+					print('line : ', lineN)
+
+				if (lineN > (self.Nmax - self.header - 1)):
+					break
+
+
+			if (self.center is None):
+				self.center = center/(lineN - self.header)
+			#self.center = (maxPos + minPos)/2.
+			maxPos -= self.center
+			minPos -= self.center
+			self.width = 2.*np.max(np.abs(np.append(maxPos, minPos)))
 
 		file.close()
+
 		if (self.verbose > 0):
 			print('have initial center and size', self.center, self.width)
-
-	def iterFileCenter(self, file):
-		#set up the variables
-		#center = np.array([0.,0.,0.])
-		maxPos = np.array([0., 0., 0.])
-		minPos = np.array([0., 0., 0.])
-		#begin the loop to read the file line-by-line
-		lineN = 0
-		center = np.array([0., 0., 0.])
-
-		for line in file:
-			lineN += 1
-			if (lineN >= self.header):
-				#get the x,y,z from the line 
-				point = line.strip().split(self.delim)
-
-				coordIndices = self.colIndices['Coordinates']
-				x = float(point[coordIndices[0]])
-				y = float(point[coordIndices[1]])
-				z = float(point[coordIndices[2]])
-				center += np.array([x,y,z])
-
-				maxPos[0] = max([maxPos[0],x])
-				maxPos[1] = max([maxPos[1],y])
-				maxPos[2] = max([maxPos[2],z])
-
-				minPos[0] = min([minPos[0],x])
-				minPos[1] = min([minPos[1],y])
-				minPos[2] = min([minPos[2],z])
-
-			if (self.verbose > 0 and (lineN % 100000 == 0)):
-				print('line : ', lineN)
-
-			if (lineN > (self.Nmax - self.header - 1)):
-				break
-
-
-		if (self.center is None):
-			self.center = center/(lineN - self.header)
-		#self.center = (maxPos + minPos)/2.
-		maxPos -= self.center
-		minPos -= self.center
-		self.width = 2.*np.max(np.abs(np.append(maxPos, minPos)))
-
 
 	def initialize(self):
 
@@ -457,7 +454,7 @@ class octreeStream:
 		#create the output directory if needed
 		if (not os.path.exists(self.path)):
 			os.makedirs(self.path)
-			
+
 		#remove the files in that directory
 		if (self.cleanDir):
 			for f in os.listdir(self.path):
@@ -465,7 +462,6 @@ class octreeStream:
 
 		#initialize the node variables
 		self.nodes = [self.createNode(self.center, '0', width=self.width)] #will contain a list of all nodes with each as a dict
-
 
 	def addPointToOctree(self, point):
 		#find the node that it belongs in 
@@ -486,6 +482,7 @@ class octreeStream:
 		#(also reset the count)
 		if (self.count > self.NMemoryMax):
 			self.dumpNodesToFiles()
+
 
 	def compileOctree(self, inputFile=None, append=False):
 
@@ -521,21 +518,9 @@ class octreeStream:
 			file = open(os.path.abspath(inputFile), 'r') #abspath converts to windows format          
 			arr = file
 
-		self.iterFileOctree(arr)
-
-		file.close()
-
-		self.dumpNodesToFiles()
-		self.shuffleAllParticlesInFiles()
-
-		print('done')
-
-	def iterFileOctree(self, arr):
 		#begin the loop to read the file line-by-line
 		lineN = 0
-		for i in range(arr.shape[0]):
-			line = arr[i]
-		#for line in arr:
+		for line in arr:
 			lineN += 1
 			if (lineN >= self.header):
 				self.count += 1
@@ -562,4 +547,9 @@ class octreeStream:
 					break
 
 
+		file.close()
 
+		self.dumpNodesToFiles()
+		self.shuffleAllParticlesInFiles()
+
+		print('done')

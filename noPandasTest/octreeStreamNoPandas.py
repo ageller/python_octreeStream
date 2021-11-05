@@ -521,7 +521,7 @@ class octreeStream:
 			file = open(os.path.abspath(inputFile), 'r') #abspath converts to windows format          
 			arr = file
 
-		self.iterFileOctree(arr)
+		self.iterFileOctree(arr, arr.shape[0])
 
 		file.close()
 
@@ -530,10 +530,10 @@ class octreeStream:
 
 		print('done')
 
-	def iterFileOctree(self, arr):
+	def iterFileOctree(self, arr, Nmax):
 		#begin the loop to read the file line-by-line
 		lineN = 0
-		for i in range(arr.shape[0]):
+		for i in range(Nmax):
 			line = arr[i]
 		#for line in arr:
 			lineN += 1

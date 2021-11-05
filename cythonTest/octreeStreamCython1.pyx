@@ -21,18 +21,30 @@ class npEncoder(json.JSONEncoder):
 		return json.JSONEncoder.default(self, obj)
 
 #I'll start with a csv file, though I want to eventually allow for hdf5 files
-class octreeStream:
-	def __init__(self, inputFile, NMemoryMax = 1e5, NNodeMax = 5000, 
-				 header = 0, delim = None, colIndices = {'Coordinates':[0,1,2]},
-				 baseDir = 'octreeNodes', Nmax=np.inf, verbose=0, path = None, minWidth=0, 
-				 h5PartKey = '', keyList = ['Coordinates'], center = None, cleanDir = False):
+cdef class octreeStream(object):
+	cpdef __init__(self, 
+		char* inputFile = '', 
+		int NMemoryMax = 100000, 
+		int NNodeMax = 5000, 
+		int header = 0, 
+		char* delim = '', 
+		colIndices = {'Coordinates':[0,1,2]},
+		char* baseDir = 'octreeNodes', 
+		int Nmax = 10000000000, 
+		int verbose = 0, 
+		char* path = '', 
+		int minWidth=0, 
+		char* h5PartKey = '', 
+		keyList = ['Coordinates'], 
+		center = None, 
+		bint cleanDir = False):
 		'''
 			inputFile : path to the file. For now only text files.
 			NMemoryMax : the maximum number of particles to save in the memory before writing to a file
 			NNodeMax : the maximum number of particles to store in a node before splitting it
 			header : the line number of the header (file starts at line 1, 
 				set header=0 for no header, and in that case x,y,z are assumed to be the first three columns)
-			delim : the delimiter between columns, if set to None, then hdf5 file is assumed
+			delim : the delimiter between columns, if set to '', then hdf5 file is assumed
 			colIndices : dict with the column numbers for each value in keyList (only necessary for csv files)
 			baseDir : the directory to store the octree files
 			Nmax : maximum number of particles to include
@@ -55,7 +67,11 @@ class octreeStream:
 		self.h5PartKey = h5PartKey
 		self.keyList = keyList
 		self.center = center
+		self.Nmax = Nmax
 		self.cleanDir = cleanDir
+		self.verbose = verbose
+
+		self.count = 0
 
 		self.nodes = None #will contain a list of all nodes with each as a dict
 
@@ -63,14 +79,10 @@ class octreeStream:
 			self.path = os.path.join(os.getcwd(), baseDir)
 		else:
 			self.path = os.path.abspath(path) #to make this windows safe
+
 		print('files will be output to:', self.path)
 
-		self.count = 0
-		self.Nmax = Nmax
-
-		self.verbose = verbose
-
-		self.width = None #will be determined in getSizeCenter
+		self.width = 1. #will be determined in getSizeCenter
 
 		
 	def createNode(self, center, id='', width=0,):
@@ -384,7 +396,7 @@ class octreeStream:
 			inputFile = self.inputFile
 			
 		#open the input file
-		if (self.delim is None):
+		if (self.delim == ''):
 			#assume this is a hdf5 file
 			file = h5py.File(os.path.abspath(inputFile), 'r')
 			arr = file
@@ -498,7 +510,7 @@ class octreeStream:
 			inputFile = self.inputFile
 
 		#open the input file
-		if (self.delim is None):
+		if (self.delim == ''):
 			#assume this is a hdf5 file
 			file = h5py.File(os.path.abspath(inputFile), 'r')
 			arr = file
@@ -521,7 +533,7 @@ class octreeStream:
 			file = open(os.path.abspath(inputFile), 'r') #abspath converts to windows format          
 			arr = file
 
-		self.iterFileOctree(arr)
+		self.iterFileOctree(arr, arr.shape[0])
 
 		file.close()
 
@@ -530,10 +542,12 @@ class octreeStream:
 
 		print('done')
 
-	def iterFileOctree(self, arr):
+	cpdef iterFileOctree(self, arr, int Nmax):
 		#begin the loop to read the file line-by-line
-		lineN = 0
-		for i in range(arr.shape[0]):
+		cdef int lineN = 0
+		cdef int i = 0
+		cdef int ii = 0
+		for i in range(Nmax):
 			line = arr[i]
 		#for line in arr:
 			lineN += 1
@@ -541,7 +555,7 @@ class octreeStream:
 				self.count += 1
 
 				#get the x,y,z from the line 
-				if (self.delim is None):
+				if (self.delim == ''):
 					point = line
 				else:
 					lineStrip = line.strip().split(self.delim)

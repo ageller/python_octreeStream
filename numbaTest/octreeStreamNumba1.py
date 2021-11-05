@@ -12,6 +12,10 @@ import json
 import h5py
 import random
 
+from numba import jit
+from numba.experimental import jitclass
+
+
 #https://stackoverflow.com/questions/56250514/how-to-tackle-with-error-object-of-type-int32-is-not-json-serializable
 #to help with dumping to json
 class npEncoder(json.JSONEncoder):
@@ -20,7 +24,9 @@ class npEncoder(json.JSONEncoder):
 			return int(obj)
 		return json.JSONEncoder.default(self, obj)
 
-#I'll start with a csv file, though I want to eventually allow for hdf5 files
+
+
+@jitclass
 class octreeStream:
 	def __init__(self, inputFile, NMemoryMax = 1e5, NNodeMax = 5000, 
 				 header = 0, delim = None, colIndices = {'Coordinates':[0,1,2]},
@@ -77,12 +83,14 @@ class octreeStream:
 		return dict(x=center[0], y=center[1], z=center[2], width=width,
 					Nparticles=0, id=id, parentNodes=[], childNodes=[], particles=[], needsUpdate=True)
 	
+	@jit(nopython=True)
 	def findClosestNodeIndexByDistance(self, point, positions):
 		#there is probably a faster and more clever way to do this
 		#print('checking dist', point.shape, positions.shape, point, positions)
 		dist2 = np.sum((positions - point)**2, axis=1)
 		return np.argmin(dist2)
 	
+	@jit(nopython=True)
 	def findClosestNode(self, point, parentIndex=None):
 		#I am going to traverse the octree to find the closest node
 		if (parentIndex is None):
@@ -100,6 +108,7 @@ class octreeStream:
 
 		return parent
 
+	@jit(nopython=True)
 	def createChildNodes(self, node):
 
 		#split the node into 8 separate nodes
@@ -406,6 +415,7 @@ class octreeStream:
 		if (self.verbose > 0):
 			print('have initial center and size', self.center, self.width)
 
+	@jit(nopython=True)
 	def iterFileCenter(self, file):
 		#set up the variables
 		#center = np.array([0.,0.,0.])
@@ -521,7 +531,7 @@ class octreeStream:
 			file = open(os.path.abspath(inputFile), 'r') #abspath converts to windows format          
 			arr = file
 
-		self.iterFileOctree(arr)
+		self.iterFileOctree(arr, arr.shape[0])
 
 		file.close()
 
@@ -530,10 +540,11 @@ class octreeStream:
 
 		print('done')
 
-	def iterFileOctree(self, arr):
+	@jit(nopython=True)
+	def iterFileOctree(self, arr, Nmax):
 		#begin the loop to read the file line-by-line
 		lineN = 0
-		for i in range(arr.shape[0]):
+		for i in range(Nmax):
 			line = arr[i]
 		#for line in arr:
 			lineN += 1
@@ -548,7 +559,8 @@ class octreeStream:
 					point = []
 					for key in self.keyList:
 						indices =  self.colIndices[key]
-						if (type(indices) is not list):
+						#if (type(indices) is not list):
+						if (numba.typeof(indices) != numba.typeof([0])): #not sure how to get the numba list type otherwise :)
 							indices = [indices]
 						for ii in indices:
 							point.append(float(lineStrip[ii]))

@@ -11,6 +11,7 @@ import numpy as np
 import json
 import h5py
 import random
+from multiprocessing import Process, Manager
 
 #https://stackoverflow.com/questions/56250514/how-to-tackle-with-error-object-of-type-int32-is-not-json-serializable
 #to help with dumping to json
@@ -20,12 +21,14 @@ class npEncoder(json.JSONEncoder):
 			return int(obj)
 		return json.JSONEncoder.default(self, obj)
 
+
 #I'll start with a csv file, though I want to eventually allow for hdf5 files
 class octreeStream:
 	def __init__(self, inputFile, NMemoryMax = 1e5, NNodeMax = 5000, 
 				 header = 0, delim = None, colIndices = {'Coordinates':[0,1,2]},
 				 baseDir = 'octreeNodes', Nmax=np.inf, verbose=0, path = None, minWidth=0, 
-				 h5PartKey = '', keyList = ['Coordinates'], center = None, cleanDir = False):
+				 h5PartKey = '', keyList = ['Coordinates'], center = None, cleanDir = False, 
+				 Ncores=1, NprocessMax = None):
 		'''
 			inputFile : path to the file. For now only text files.
 			NMemoryMax : the maximum number of particles to save in the memory before writing to a file
@@ -43,34 +46,43 @@ class octreeStream:
 			keyList : Any additional keys that are desired; MUST contain the key to Coordinates first.  If blank, then assume that x,y,z is the first 3 columns in file
 			center : options for the user to provide the octree center (can save time)
 			cleanDir : if true this will erase the files within that directory before beginning
+			Ncores : number of cores for multiprocessing
 		'''
 		
-		self.inputFile = inputFile
-		self.NMemoryMax = NMemoryMax
-		self.NNodeMax = NNodeMax
-		self.header = header
-		self.delim = delim
-		self.colIndices = colIndices
-		self.minWidth = minWidth
-		self.h5PartKey = h5PartKey
-		self.keyList = keyList
-		self.center = center
-		self.cleanDir = cleanDir
-
-		self.nodes = None #will contain a list of all nodes with each as a dict
+		self.manager = Manager().dict()
+		self.manager['inputFile'] = inputFile
+		self.manager['NMemoryMax'] = NMemoryMax
+		self.manager['NNodeMax'] = NNodeMax
+		self.manager['header'] = header
+		self.manager['delim'] = delim
+		self.manager['colIndices'] = colIndices
+		self.manager['minWidth'] = minWidth
+		self.manager['h5PartKey'] = h5PartKey
+		self.manager['keyList'] = keyList
+		self.manager['center'] = center
+		self.manager['Nmax'] = Nmax
+		self.manager['cleanDir'] = cleanDir
+		self.manager['Ncores'] = Ncores
+		self.manager['verbose'] = verbose
+		if (NprocessMax is None):
+			self.manager['NprocessMax'] = self.manager['NMemoryMax']
+		else:
+			self.manager['NprocessMax'] = NprocessMax
 
 		if (path is None):
-			self.path = os.path.join(os.getcwd(), baseDir)
+			self.manager['path'] = os.path.join(os.getcwd(), baseDir)
 		else:
-			self.path = os.path.abspath(path) #to make this windows safe
-		print('files will be output to:', self.path)
+			self.manager['path'] = os.path.abspath(path) #to make this windows safe
+		print('files will be output to:', self.manager['path'])
 
-		self.count = 0
-		self.Nmax = Nmax
+		self.manager['count'] = 0
+		self.manager['nodes'] = None #will contain a list of all nodes with each as a dict
+		self.manager['arr'] = None #will contain the data from the file
 
-		self.verbose = verbose
+		self.manager['MPnodes'] = {} #will be populated with nodes for multiprocessing, before they are combined back into self.manager['nodes
 
-		self.width = None #will be determined in getSizeCenter
+		self.manager['width'] = None #will be determined in getSizeCenter
+
 
 		
 	def createNode(self, center, id='', width=0,):
@@ -87,15 +99,15 @@ class octreeStream:
 		#I am going to traverse the octree to find the closest node
 		if (parentIndex is None):
 			parentIndex = 0
-		parent = self.nodes[parentIndex]
+		parent = self.manager['nodes'][parentIndex]
 		childIndices = parent['childNodes']
 
 		while (childIndices != []):
 			childPositions = []
 			for i in childIndices:
-				childPositions.append([self.nodes[i]['x'], self.nodes[i]['y'], self.nodes[i]['z']])
+				childPositions.append([self.manager['nodes'][i]['x'], self.manager['nodes'][i]['y'], self.manager['nodes'][i]['z']])
 			index = childIndices[self.findClosestNodeIndexByDistance(point[0:3], np.array(childPositions))]
-			parent = self.nodes[index]
+			parent = self.manager['nodes'][index]
 			childIndices = parent['childNodes']
 
 		return parent
@@ -103,11 +115,11 @@ class octreeStream:
 	def createChildNodes(self, node):
 
 		#split the node into 8 separate nodes
-		if (self.verbose > 0):
+		if (self.manager['verbose'] > 0):
 			print('creating child nodes', node['id'], node['Nparticles'], node['width'])
 
 		#check if we need to read in the file (should this be a more careful check?)
-		if (len(node['particles']) < self.NNodeMax): 
+		if (len(node['particles']) < self.manager['NNodeMax']): 
 			self.populateNodeFromFile(node)
 
 
@@ -156,9 +168,9 @@ class octreeStream:
 		childIndices = np.array([], dtype='int')
 		for i, n in enumerate([n1, n2, n3, n4, n5, n6, n7, n8]):
 			#add the parent and child indices to the nodes
-			n['parentNodes'] = node['parentNodes'] + [self.nodes.index(node)]
-			childIndex = len(self.nodes)
-			self.nodes.append(n)
+			n['parentNodes'] = node['parentNodes'] + [self.manager['nodes'].index(node)]
+			childIndex = len(self.manager['nodes'])
+			self.manager['nodes'].append(n)
 			node['childNodes'].append(childIndex)
 
 			#create these so that I can divide up the parent particles
@@ -170,41 +182,41 @@ class octreeStream:
 
 		#divide up the particles 
 		for p in node['particles']:
-			child = self.findClosestNode(np.array(p), parentIndex=self.nodes.index(node))
+			child = self.findClosestNode(np.array(p), parentIndex=self.manager['nodes'].index(node))
 			child['particles'].append(p)
 			child['Nparticles'] += 1      
 
 		#check how many particles ended up in each child node
-		# if (self.verbose > 0):
+		# if (self.manager['verbose > 0):
 		# 	for i, n in enumerate([n1, n2, n3, n4, n5, n6, n7, n8]):
 		# 		print('   Child node, Nparticles', n['id'], n['Nparticles'])
-		# 		self.checkNodeParticles(node=n)
+		# 		self.manager['checkNodeParticles(node=n)
 		
 		#remove the particles from the parent
 		node['particles'] = []
 		node['Nparticles'] = 0
 		
 		#check if we need to remove a file
-		nodeFile = os.path.join(self.path, node['id'] + '.csv')
+		nodeFile = os.path.join(self.manager['path'], node['id'] + '.csv')
 		if (os.path.exists(nodeFile)):
 			os.remove(nodeFile)
-			if (self.verbose > 0):
+			if (self.manager['verbose'] > 0):
 				print('removing file', nodeFile)
 			
 	def dumpNodesToFiles(self):
 		#dump all the nodes to files
-		if (self.verbose > 0):
+		if (self.manager['verbose'] > 0):
 			print('dumping nodes to files ...')
 		
 		#individual nodes
-		for node in self.nodes:
+		for node in self.manager['nodes']:
 			if ( (node['Nparticles'] > 0) and ('particles' in node) and (node['needsUpdate'])):
 
 				parts = np.array(node['particles'])
-				nodeFile = os.path.join(self.path, node['id'] + '.csv')
+				nodeFile = os.path.join(self.manager['path'], node['id'] + '.csv')
 				fmt = ''
 				header = ''
-				for key in self.keyList:
+				for key in self.manager['keyList']:
 					if (key == 'Coordinates'):
 						fmt += '%.8e,%.8e,%.8e,'
 						header +='x,y,z,'
@@ -226,19 +238,19 @@ class octreeStream:
 
 				node['particles'] = []
 				node['needsUpdate'] = False
-				if (self.verbose > 1):
+				if (self.manager['verbose'] > 1):
 					print('writing node to file ', node['id'], mode)
 				
 		#node dict
-		with open(os.path.join(self.path, 'octree.json'), 'w') as f:
-			json.dump(self.nodes, f, cls=npEncoder)
+		with open(os.path.join(self.manager['path'], 'octree.json'), 'w') as f:
+			json.dump(self.manager['nodes'], f, cls=npEncoder)
 
-		self.count = 0
+		self.manager['count'] = 0
 				
 	
 	def checkNodeParticles(self, node=None, iden=None):
 		if (iden is not None):
-			for n in self.nodes:
+			for n in self.manager['nodes']:
 				if (n['id'] == iden):
 					node = n
 					break
@@ -277,7 +289,7 @@ class octreeStream:
 					outside = np.where(wAll > node['width'])[0]
 					outside_pick = outside[0]
 					#check if there is a closer node... and if not, why not!!??
-					for i,n in enumerate(self.nodes):
+					for i,n in enumerate(self.manager['nodes']):
 						if (i == 0):
 							allPositions = np.array([[n['x'], n['y'], n['z']]])
 						else:
@@ -292,19 +304,19 @@ class octreeStream:
 	def checkNodeFiles(self):
 		#check to make sure that only the nodes with Nparticles > 0 have files
 		Nerror = 0
-		if (self.nodes is None):
+		if (self.manager['nodes'] is None):
 			print('Please compile the octree first')
 			return
 
 		#first get names of all expected files
 		names = []
 		Nparts = []
-		for n in self.nodes:
+		for n in self.manager['nodes']:
 			if (n['Nparticles'] > 0):
 				names.append(n['id'] + '.csv')
 				Nparts.append(n['Nparticles'])
 
-		avail = os.listdir(self.path)
+		avail = os.listdir(self.manager['path'])
 
 		#now check the list of available files
 		for fname in avail:
@@ -327,45 +339,45 @@ class octreeStream:
 
 		#read in the octree from the json file
 		if (read):
-			with open(os.path.join(self.path,'octree.json')) as f:
-				self.nodes = json.load(f)
+			with open(os.path.join(self.manager['path'],'octree.json')) as f:
+				self.manager['nodes'] = json.load(f)
 				
 
 		NbaseNodes = 0
-		for node in self.nodes:
+		for node in self.manager['nodes']:
 			if (node['Nparticles'] > 0):
 				Nparts += node['Nparticles']
 				NbaseNodes += 1
 				self.populateNodeFromFile(node)
 		print('Populated octree from files.')
 		print(' -- total number of particles = ', Nparts)
-		print(' -- total number of nodes = ', len(self.nodes))
+		print(' -- total number of nodes = ', len(self.manager['nodes']))
 		print(' -- total number of base nodes = ', NbaseNodes)
 		
 
 	def populateNodeFromFile(self, node):
-		nodeFile = os.path.join(self.path, node['id'] + '.csv')
-		if (self.verbose > 1):
+		nodeFile = os.path.join(self.manager['path'], node['id'] + '.csv')
+		if (self.manager['verbose'] > 1):
 			print('reading in file', nodeFile)
 		parts = np.genfromtxt(nodeFile, delimiter=',', skip_header=1).tolist()
 		node['particles'] += parts
 		node['Nparticles'] = len(node['particles'])
 		node['needsUpdate'] = True
-		self.count += node['Nparticles']
+		self.manager['count'] += node['Nparticles']
 
 	def shuffleAllParticlesInFiles(self):
 
-		if (self.verbose > 0):
+		if (self.manager['verbose'] > 0):
 			print('randomizing particle order in data files ... ')
 
 		#read in the octree from the json file
-		with open(os.path.join(self.path,'octree.json')) as f:
-			self.nodes = json.load(f)
+		with open(os.path.join(self.manager['path'],'octree.json')) as f:
+			self.manager['nodes'] = json.load(f)
 				
-		for node in self.nodes:
+		for node in self.manager['nodes']:
 			if (node['Nparticles'] > 0):
-				nodeFile = os.path.join(self.path, node['id'] + '.csv')
-				if (self.verbose > 1):
+				nodeFile = os.path.join(self.manager['path'], node['id'] + '.csv')
+				if (self.manager['verbose'] > 1):
 					print(nodeFile)
 				lines = open(nodeFile).readlines()
 				header = lines[0]
@@ -377,25 +389,25 @@ class octreeStream:
 	def getSizeCenter(self, inputFile=None):
 		#It will be easiest if we can get the center and the size at the start.  This will create overhead to read in the entire file...
 
-		if (self.verbose > 0):
+		if (self.manager['verbose'] > 0):
 			print('calculating center and size ... ')
 
 		if (inputFile is None):
-			inputFile = self.inputFile
+			inputFile = self.manager['inputFile']
 			
 		#open the input file
-		if (self.delim is None):
+		if (self.manager['delim'] is None):
 			#assume this is a hdf5 file
 			file = h5py.File(os.path.abspath(inputFile), 'r')
 			arr = file
-			if (self.h5PartKey != ''):
-				arr = arr[self.h5PartKey]
-			arr = np.array(arr[self.keyList[0]]) #Coordinates are always first
-			if (self.center is None):
-				self.center = np.mean(arr, axis=0)
-			maxPos = np.max(arr - self.center, axis=0)
-			minPos = np.min(arr - self.center, axis=0)
-			self.width = 2.*np.max(np.abs(np.append(maxPos,minPos)))
+			if (self.manager['h5PartKey'] != ''):
+				arr = arr[self.manager['h5PartKey']]
+			arr = np.array(arr[self.manager['keyList'][0]]) #Coordinates are always first
+			if (self.manager['center'] is None):
+				self.manager['center'] = np.mean(arr, axis=0)
+			maxPos = np.max(arr - self.manager['center'], axis=0)
+			minPos = np.min(arr - self.manager['center'], axis=0)
+			self.manager['width'] = 2.*np.max(np.abs(np.append(maxPos,minPos)))
 
 		else:
 			#for text files
@@ -403,8 +415,8 @@ class octreeStream:
 			self.iterFileCenter(file)
 
 		file.close()
-		if (self.verbose > 0):
-			print('have initial center and size', self.center, self.width)
+		if (self.manager['verbose'] > 0):
+			print('have initial center and size', self.manager['center'], self.manager['width'])
 
 	def iterFileCenter(self, file):
 		#set up the variables
@@ -417,11 +429,11 @@ class octreeStream:
 
 		for line in file:
 			lineN += 1
-			if (lineN >= self.header):
+			if (lineN >= self.manager['header']):
 				#get the x,y,z from the line 
-				point = line.strip().split(self.delim)
+				point = line.strip().split(self.manager['delim'])
 
-				coordIndices = self.colIndices['Coordinates']
+				coordIndices = self.manager['colIndices']['Coordinates']
 				x = float(point[coordIndices[0]])
 				y = float(point[coordIndices[1]])
 				z = float(point[coordIndices[2]])
@@ -435,42 +447,42 @@ class octreeStream:
 				minPos[1] = min([minPos[1],y])
 				minPos[2] = min([minPos[2],z])
 
-			if (self.verbose > 0 and (lineN % 100000 == 0)):
+			if (self.manager['verbose'] > 0 and (lineN % 100000 == 0)):
 				print('line : ', lineN)
 
-			if (lineN > (self.Nmax - self.header - 1)):
+			if (lineN > (self.manager['Nmax'] - self.manager['header'] - 1)):
 				break
 
 
-		if (self.center is None):
-			self.center = center/(lineN - self.header)
-		#self.center = (maxPos + minPos)/2.
-		maxPos -= self.center
-		minPos -= self.center
-		self.width = 2.*np.max(np.abs(np.append(maxPos, minPos)))
+		if (self.manager['center'] is None):
+			self.manager['center'] = center/(lineN - self.manager['header'])
+		#self.manager['center = (maxPos + minPos)/2.
+		maxPos -= self.manager['center']
+		minPos -= self.manager['center']
+		self.manager['width'] = 2.*np.max(np.abs(np.append(maxPos, minPos)))
 
 
 	def initialize(self):
 
-		self.count = 0
+		self.manager['count'] = 0
 
 		#create the output directory if needed
-		if (not os.path.exists(self.path)):
-			os.makedirs(self.path)
+		if (not os.path.exists(self.manager['path'])):
+			os.makedirs(self.manager['path'])
 			
 		#remove the files in that directory
-		if (self.cleanDir):
-			for f in os.listdir(self.path):
-				os.remove(os.path.join(self.path, f))
+		if (self.manager['cleanDir']):
+			for f in os.listdir(self.manager['path']):
+				os.remove(os.path.join(self.manager['path'], f))
 
 		#initialize the node variables
-		self.nodes = [self.createNode(self.center, '0', width=self.width)] #will contain a list of all nodes with each as a dict
+		self.manager['nodes'] = self.createNode(self.manager['center'], '0', width=self.manager['width']) #will contain a list of all nodes with each as a dict
 
 
 	def addPointToOctree(self, point):
 		#find the node that it belongs in 
 		node = self.findClosestNode(np.array(point))
-		if (self.verbose > 2):
+		if (self.manager['verbose'] > 2):
 			print('id, Nparticles', node['id'], node['Nparticles'])
 			
 		#add the particle to the node
@@ -479,12 +491,12 @@ class octreeStream:
 		node['Nparticles'] += 1
 
 		#check if we need to split the node
-		if (node['Nparticles'] >= self.NNodeMax and node['width'] >= self.minWidth*2):
+		if (node['Nparticles'] >= self.manager['NNodeMax'] and node['width'] >= self.manager['minWidth']*2):
 			self.createChildNodes(node) 
 
 		#if we are beyond the memory limit, then write the nodes to files and clear the particles from the nodes 
 		#(also reset the count)
-		if (self.count > self.NMemoryMax):
+		if (self.manager['count'] > self.manager['NMemoryMax']):
 			self.dumpNodesToFiles()
 
 	def compileOctree(self, inputFile=None, append=False):
@@ -495,18 +507,18 @@ class octreeStream:
 			self.initialize()
 
 		if (inputFile is None):
-			inputFile = self.inputFile
+			inputFile = self.manager['inputFile']
 
 		#open the input file
-		if (self.delim is None):
+		if (self.manager['delim'] is None):
 			#assume this is a hdf5 file
 			file = h5py.File(os.path.abspath(inputFile), 'r')
 			arr = file
-			if (self.h5PartKey != ''):
-				arrPart = arr[self.h5PartKey]
+			if (self.manager['h5PartKey'] != ''):
+				arrPart = arr[self.manager['h5PartKey']]
 
 			#now build the particle array
-			for i, key in enumerate(self.keyList):
+			for i, key in enumerate(self.manager['keyList']):
 				if (i == 0):
 					arr = np.array(arrPart[key]) #Coordinates are always first
 				else:
@@ -521,6 +533,8 @@ class octreeStream:
 			file = open(os.path.abspath(inputFile), 'r') #abspath converts to windows format          
 			arr = file
 
+
+		self.manager['Nmax'] = min(self.manager['Nmax'], arr.shape[0])
 		self.iterFileOctree(arr)
 
 		file.close()
@@ -533,33 +547,59 @@ class octreeStream:
 	def iterFileOctree(self, arr):
 		#begin the loop to read the file line-by-line
 		lineN = 0
+		iStart = 0;
+		while lineN < self.manager['Nmax']:
+			jobs = []
+			for i in range(self.manager['Ncores']):
+				iEnd = int(np.floor(min(iStart + self.manager['NprocessMax'], self.manager['Nmax'])))
+				print(iStart, iEnd, lineN)
+				j = Process(target=self.iterLinesOctree, args=(arr[iStart:iEnd], ))
+				jobs.append(j)
+				lineN = iEnd
+				iStart = iEnd + 1
+				if (lineN >= arr.shape[0]):
+					break
+
+			print('starting jobs', len(jobs))
+			for j in jobs:
+				j.start()
+
+			print('joining jobs')
+			for j in jobs:
+				j.join()
+
+			#now combine and handle the children?
+
+	def iterLinesOctree(self, arr):
+		print("checking",arr.shape[0])
 		for i in range(arr.shape[0]):
 			line = arr[i]
 		#for line in arr:
 			lineN += 1
-			if (lineN >= self.header):
-				self.count += 1
+			if (lineN >= self.manager['header']):
+				self.manager['count'] += 1
 
 				#get the x,y,z from the line 
-				if (self.delim is None):
+				if (self.manager['delim'] is None):
 					point = line
 				else:
-					lineStrip = line.strip().split(self.delim)
+					lineStrip = line.strip().split(self.manager['delim'])
 					point = []
-					for key in self.keyList:
-						indices =  self.colIndices[key]
+					for key in self.manager['keyList']:
+						indices =  self.manager['colIndices'][key]
 						if (type(indices) is not list):
 							indices = [indices]
 						for ii in indices:
 							point.append(float(lineStrip[ii]))
 
-				self.addPointToOctree(point)
+				#self.addPointToOctree(point)
 				
-				if (self.verbose > 0 and (lineN % 100000 == 0)):
+				if (self.manager['verbose'] > 0 and (lineN % 100000 == 0)):
 					print('line : ', lineN)
 
-				if (lineN > (self.Nmax - self.header - 1)):
+				if (lineN > (self.manager['Nmax'] - self.manager['header'] - 1)):
 					break
+
 
 
 
