@@ -20,7 +20,6 @@ class npEncoder(json.JSONEncoder):
 			return int(obj)
 		return json.JSONEncoder.default(self, obj)
 
-#I'll start with a csv file, though I want to eventually allow for hdf5 files
 class octreeStream:
 	def __init__(self, inputFile, NMemoryMax = 1e5, NNodeMax = 5000, 
 				 header = 0, delim = None, colIndices = {'Coordinates':[0,1,2]},
