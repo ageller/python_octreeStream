@@ -24,7 +24,7 @@ class octreeStream:
 	def __init__(self, inputFile, NMemoryMax = 1e5, NNodeMax = 5000, 
 				 header = 0, delim = None, colIndices = {'Coordinates':[0,1,2]},
 				 baseDir = 'octreeNodes', Nmax=np.inf, verbose=0, path = None, minWidth=0, 
-				 h5PartKey = '', keyList = ['Coordinates'], center = None, cleanDir = False):
+				 h5PartKey = '', keyList = ['Coordinates'], logKey = [False], center = None, cleanDir = False):
 		'''
 			inputFile : path to the file. For now only text files.
 			NMemoryMax : the maximum number of particles to save in the memory before writing to a file
@@ -40,6 +40,7 @@ class octreeStream:
 			minWidth : the minimum width that a node can have
 			h5PartKey : if needed, can be used to specify which particle type to use, e.g. 'PartType0'
 			keyList : Any additional keys that are desired; MUST contain the key to Coordinates first.  If blank, then assume that x,y,z is the first 3 columns in file
+			logList : a list of true/false values indicating if a key from keyListshould be treated as the log (not Coordinates or Velocities)
 			center : options for the user to provide the octree center (can save time)
 			cleanDir : if true this will erase the files within that directory before beginning
 		'''
@@ -53,6 +54,7 @@ class octreeStream:
 		self.minWidth = minWidth
 		self.h5PartKey = h5PartKey
 		self.keyList = keyList
+		self.logKey = logKey
 		self.center = center
 		self.cleanDir = cleanDir
 
@@ -203,7 +205,7 @@ class octreeStream:
 				nodeFile = os.path.join(self.path, node['id'] + '.csv')
 				fmt = ''
 				header = ''
-				for key in self.keyList:
+				for key,logCheck in zip(self.keyList, self.logKey):
 					if (key == 'Coordinates'):
 						fmt += '%.8e,%.8e,%.8e,'
 						header +='x,y,z,'
@@ -212,7 +214,10 @@ class octreeStream:
 						header +='vx,vy,vz,'
 					else:
 						fmt += '%.8e,'
-						header += key + ','
+						useKey = key
+						if (logCheck):
+							useKey = 'log10' + useKey
+						header += useKey + ','
 				fmt = fmt[:-1] #remove the last ','
 				header = header[:-1] #remove the last ','
 				mode = 'w'
@@ -505,11 +510,14 @@ class octreeStream:
 				arrPart = arr[self.h5PartKey]
 
 			#now build the particle array
-			for i, key in enumerate(self.keyList):
+			for i, (key, logCheck) in enumerate(zip(self.keyList, self.logKey)):
 				if (i == 0):
 					arr = np.array(arrPart[key]) #Coordinates are always first
 				else:
-					addOn = np.array(arrPart[key])
+					if (logCheck):
+						addOn = np.log10(np.array(arrPart[key]))
+					else:
+						addOn = np.array(arrPart[key])
 					arrLen = 1
 					if (key == 'Velocities'): #requires special handling because it is a 2D array
 						arrLen = 3
