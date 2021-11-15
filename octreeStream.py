@@ -225,7 +225,7 @@ class octreeStream:
 					mode = 'a'
 					header = ''
 				with open(nodeFile, mode) as f:
-					np.savetxt(nodeFile, parts, fmt=fmt, header=header, comments='')
+					np.savetxt(f, parts, fmt=fmt, header=header, comments='')
 
 
 				node['particles'] = []
